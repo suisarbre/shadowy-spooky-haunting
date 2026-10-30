@@ -16,6 +16,7 @@ echo "VM-READY $(cat /proc/uptime)"
 # so a hardware watchdog reset brings cFS back with no one at the keyboard)
 if grep -q 'fsw=auto' /proc/cmdline; then
   echo "FSW-AUTOSTART"
-  (cd /cfs/cpu1 && ./core-cpu1 2>&1 | tee /tmp/cfs.log | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]|RESET') &
+  # show startup milestones and any failure (a corrupted file shows up here), plus the exit code
+  (cd /cfs/cpu1 && { ./core-cpu1 2>&1; echo "FSW-EXIT $?"; } | tee /tmp/cfs.log | grep -E 'OPERATIONA[L]|RESET due t[o]|Could not loa[d]|Could not fin[d]|ERRO[R]|[Ff]ailed t[o]|FSW-EXI[T]|not foun[d]|[Ee]xec forma[t]|syntax erro[r]') &
 fi
 exec setsid cttyhack /bin/sh

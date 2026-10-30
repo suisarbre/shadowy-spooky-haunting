@@ -67,6 +67,26 @@ Tested in v86 (`test/test-watchdog.mjs`, 9/9 pass):
 | Flight software hangs (`kill -STOP`) | Same: reset after ~10 s, back on its own |
 | Watchdog disconnected, flight software killed | Stays down |
 
+## Boot storage and latent damage
+
+The page keeps the flight computer's boot storage, the kernel and the root filesystem, in browser memory, the way a spacecraft keeps its software in flash. Every power-on boots from storage as it is at that moment. The filesystem is kept uncompressed (decompressed once at load) so a hit damages one file instead of breaking the whole archive.
+
+**Hit storage** flips one bit at a chosen file, offset and bit. The running system does not notice, because it already sits in RAM; the damage waits for the next boot. **Power cycle** reboots on ground command, **Restore storage** re-uploads the launch image, and the counter shows how many bits differ from it.
+
+The watchdog now runs from power-on with a 30 s boot window (Health & Safety tightens it to 10 s once up), so a computer that cannot boot gets reset again and again: a boot loop, which the page flags after two failed boots in a row.
+
+Tested in Chrome (`test/browser-storage.mjs`):
+
+| Storage hit (offset 0, bit 0) | Next boot |
+|---|---|
+| `lib/libc.so.6` (unused duplicate; the 32-bit loader uses `lib32/`) | Normal |
+| `cfs/cpu1/cf/sample_app.so` | cFS logs `Could not load file:/cf/sample_app.so`, everything else runs |
+| `cfs/cpu1/core-cpu1` | ELF signature broken, the shell tries to run it as a script and fails: boot loop |
+| `kernel` + 20000, bit 3 | Boot loop |
+| Restore storage during the loop | Next watchdog reset boots clean |
+
+This sets up the next step, a protected golden image the boot loader can fall back to.
+
 ## How it fits together
 
 ```

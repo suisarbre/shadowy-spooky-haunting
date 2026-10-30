@@ -13,6 +13,9 @@
   button { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--acc); }
   button:disabled { opacity:.5; cursor:default; }
+  label { color:var(--dim); align-self:center; }
+  select, input { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:5px 6px; font:inherit; min-width:0; }
+  #st-off { width:7.5em; } #st-file { max-width:100%; }
   button[aria-pressed="true"] { border-color:var(--ok); color:var(--ok); }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; }
   .box { background:var(--panel); border:1px solid #30363d; border-radius:8px; padding:10px; min-width:0; }
@@ -42,6 +45,18 @@
 </div>
 <p class="sub">Hardware watchdog: <b id="wd-state">waiting for Health &amp; Safety</b> <span id="wd-kick"></span> · resets: <b id="wd-resets">0</b>
   <button id="wd-jumper" aria-pressed="true">Watchdog: ON</button></p>
+<div class="row" aria-label="Boot storage">
+  <label for="st-file">Storage file</label>
+  <select id="st-file" disabled><option>loading…</option></select>
+  <label for="st-off">offset</label>
+  <input id="st-off" type="number" min="0" value="0" inputmode="numeric">
+  <label for="st-bit">bit</label>
+  <select id="st-bit"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select>
+  <button id="st-hit" disabled>Hit storage</button>
+  <button id="st-restore" disabled>Restore storage</button>
+  <button id="st-cycle" disabled>Power cycle</button>
+</div>
+<p class="sub">Boot storage: <b id="st-diff">0</b> bits differ from the launch image · boots: <b id="boots">0</b> · failed boots in a row: <b id="fails">0</b></p>
 <p class="sub">SAMPLE_APP command counter (from its telemetry): <b id="ctr">–</b> &nbsp; FAULT_INJ bits flipped: <b id="flips">0</b> &nbsp; ECC corrected: <b id="ecc-c">0</b> &nbsp; ECC uncorrectable: <b id="ecc-u">0</b></p>
 <div class="grid">
   <div class="box"><h2>VM console (ttyS0)</h2><pre id="con"></pre></div>
@@ -49,7 +64,7 @@
   <div class="box"><h2>Telemetry packets by message ID</h2><pre id="tlm"></pre></div>
 </div>
 
-<script src="libv86.js?v=2026103001"></script>
+<script src="libv86.js?v=2026103003"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const FSW_BTNS = ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"];
@@ -62,25 +77,89 @@ const status = (html) => { $("status").innerHTML = html; };
 // ---------------------------------------------------------------------------
 // Bump BUILD whenever the VM images change, so browsers never mix a cached old
 // image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
-const BUILD = "2026103001";
+const BUILD = "2026103003";
 let emu = null, files = null, bootTimer = null;
+const BOOT_WINDOW_MS = 30000;   // the watchdog runs from power-on; flight software must check in within this
+let boots = 0, failedStreak = 0, reachedOperational = false, autostartSeen = false;
 let con = "", s1 = "", s2 = "";
 let started = false, operational = false, probing = false, lastTlm = 0;
 
+// ---------------------------------------------------------------------------
+// Boot storage ("flash"). The kernel and the root filesystem live here, and
+// every power-on boots from whatever is in storage now. Radiation can flip
+// bits here too: the running system is unaffected (it already sits in RAM),
+// but the damage waits for the next boot. The filesystem is kept uncompressed
+// so a hit damages one file instead of breaking the whole archive.
+// ---------------------------------------------------------------------------
+const storage = { kernel: null, fs: null, origKernel: null, origFs: null, files: [], diffs: new Map() };
+
 async function loadFiles() {
-  const get = async (u) => { const r = await fetch(`${u}?v=${BUILD}`); if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return { buffer: await r.arrayBuffer() }; };
-  const [bios, vga_bios, bzimage, initrd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
-  files = { bios, vga_bios, bzimage, initrd };
+  const get = async (u) => { const r = await fetch(`${u}?v=${BUILD}`); if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return r; };
+  const [bios, vga_bios, bz, rd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
+  const fs = new Uint8Array(await new Response(rd.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  storage.kernel = new Uint8Array(await bz.arrayBuffer());
+  storage.fs = fs;
+  storage.origKernel = storage.kernel.slice(); storage.origFs = fs.slice();
+  storage.files = parseCpio(fs);
+  files = { bios: { buffer: await bios.arrayBuffer() }, vga_bios: { buffer: await vga_bios.arrayBuffer() } };
+  const opts = [`<option value="kernel">kernel (bzImage, ${storage.kernel.length} bytes)</option>`]
+    .concat(storage.files.map((f) => `<option value="${f.name}">${f.name} (${f.size} bytes)</option>`));
+  $("st-file").innerHTML = opts.join(""); $("st-file").value = "cfs/cpu1/core-cpu1";
+  for (const id of ["st-file", "st-hit", "st-restore", "st-cycle"]) $(id).disabled = false;
+}
+
+// newc cpio: 110-byte ASCII header, name, data; name and data padded to 4 bytes
+function parseCpio(u8) {
+  const out = []; let off = 0; const td = new TextDecoder();
+  const hexAt = (o) => parseInt(td.decode(u8.subarray(o, o + 8)), 16);
+  while (off + 110 <= u8.length && td.decode(u8.subarray(off, off + 6)) === "070701") {
+    const mode = hexAt(off + 14), size = hexAt(off + 54), nameSize = hexAt(off + 94);
+    const name = td.decode(u8.subarray(off + 110, off + 110 + nameSize - 1));
+    const dataOff = (off + 110 + nameSize + 3) & ~3;
+    if (name === "TRAILER!!!") break;
+    if ((mode & 0o170000) === 0o100000 && size > 0) out.push({ name, dataOff, size });
+    off = (dataOff + size + 3) & ~3;
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function hitStorage(target, offset, bit) {
+  let area, base, size, label;
+  if (target === "kernel") { area = storage.kernel; base = 0; size = area.length; label = "kernel"; }
+  else { const f = storage.files.find((x) => x.name === target); if (!f) return; area = storage.fs; base = f.dataOff; size = f.size; label = f.name; }
+  const rel = ((offset % size) + size) % size, abs = base + rel, mask = 1 << bit;
+  const before = area[abs]; area[abs] ^= mask;
+  const key = (area === storage.kernel ? "k" : "f") + abs;
+  const x = (storage.diffs.get(key) || 0) ^ mask;
+  if (x) storage.diffs.set(key, x); else storage.diffs.delete(key);
+  updateStorageView();
+  logEvent(`[STORAGE] hit ${label}+0x${rel.toString(16)} bit ${bit}: ${before.toString(16).padStart(2, "0")}->${area[abs].toString(16).padStart(2, "0")} (takes effect at the next boot)`);
+}
+
+function restoreStorage() {
+  storage.kernel = storage.origKernel.slice(); storage.fs = storage.origFs.slice(); storage.diffs.clear();
+  updateStorageView(); logEvent("[STORAGE] restored from the launch image (ground re-upload)");
+}
+
+function updateStorageView() {
+  let bits = 0; for (const v of storage.diffs.values()) { let n = v; while (n) { bits += n & 1; n >>= 1; } }
+  $("st-diff").textContent = bits;
 }
 
 function powerOn() {
   con = ""; s1 = ""; s2 = ""; started = false; operational = false; probing = false;
   clearTimeout(bootTimer); bootTimer = null;
-  wd.enabled = false; wd.timeoutMs = 0;
+  // Like real watchdog chips, ours is running from the moment power comes on.
+  // Health & Safety tightens the timeout once the flight software is up.
+  wd.enabled = wd.jumper; wd.timeoutMs = BOOT_WINDOW_MS; wd.lastKick = Date.now(); wd.byHs = false;
+  boots++; reachedOperational = false; autostartSeen = false; $("boots").textContent = boots;
   setFswButtons(false); $("b-start").disabled = true; $("age").textContent = "";
-  status("booting flight computer…");
+  status(failedStreak >= 2 ? `<span class="bad">BOOT LOOP: boot #${boots}, ${failedStreak} failed in a row</span>` : `booting flight computer (boot #${boots})…`);
   emu = new V86({
     wasm_path: `v86.wasm?v=${BUILD}`, ...files,
+    // boot from storage as it is right now, including any radiation damage
+    bzimage: { buffer: storage.kernel.slice().buffer },
+    initrd: { buffer: storage.fs.slice().buffer },
     // fsw=auto: the VM boots straight into cFS, like a real flight computer
     cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
     memory_size: 128 * 1024 * 1024,
@@ -109,13 +188,13 @@ function onConsoleByte(b) {
   if (con.length > 20000) con = con.slice(-15000);
   $("con").textContent = con; $("con").scrollTop = 1e9;
   const tail = con.slice(-300);
-  if (/FSW-AUTOSTART/.test(con) && !started) { started = true; status("starting flight software…"); }
+  if (!autostartSeen && /FSW-AUTOSTART/.test(con)) { autostartSeen = true; started = true; status("starting flight software…"); }
   // Fallback: an image without autostart boots to a plain shell. Start cFS from here instead.
-  if (/VM-READY/.test(con) && !started && !bootTimer) {
-    bootTimer = setTimeout(() => { if (!started && emu) startFsw(); }, 4000);
+  if (/VM-READY/.test(con) && !started && !autostartSeen && !bootTimer) {
+    bootTimer = setTimeout(() => { if (!started && !autostartSeen && emu) startFsw(); }, 4000);
   }
   if (/entering OPERATIONAL/.test(con.slice(-4000)) && started && !operational) {
-    operational = true; lastTlm = Date.now();
+    operational = true; lastTlm = Date.now(); reachedOperational = true; failedStreak = 0; $("fails").textContent = 0;
     status('<span class="ok">cFS OPERATIONAL</span>'); setFswButtons(true);
     send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));   // turn on the downlink
   }
@@ -125,6 +204,13 @@ function onConsoleByte(b) {
     status(`<span class="bad">${msg}</span>`); $("age").textContent = "";
     setFswButtons(false); $("b-start").disabled = false; con += "\n";
   }
+  const exit = tail.match(/FSW-EXIT (\d+)/);
+  if (exit && started && !/exit-seen/.test(con.slice(-20))) {
+    started = false; operational = false; probing = false; setFswButtons(false); $("age").textContent = "";
+    const why = /exec format|not found|can't execute|syntax error/i.test(con.slice(-1500)) ? "could not start (corrupted file?)" : `exited with code ${exit[1]}`;
+    status(`<span class="bad">flight software ${why}${wd.jumper ? ": waiting for the watchdog" : ""}</span>`); con += "\nexit-seen\n";
+  }
+  if (/Kernel panic/.test(tail) && !/panic-seen/.test(con.slice(-20))) { status('<span class="bad">kernel panic: the flight computer cannot boot</span>'); con += "\npanic-seen\n"; }
   if (/FSW-ALIVE\r?\n/.test(tail) && probing) {
     probing = false; lastTlm = Date.now();
     status('<span class="bad">no telemetry, but the process is alive (hung?)</span>'); con += "\n";
@@ -198,26 +284,27 @@ const send = (p) => { if (emu) emu.serial_send_bytes(1, new TextEncoder().encode
 // kicks stop for longer than the timeout, the chip cuts power and the flight
 // computer cold-boots. The ON/OFF button is a jumper for the before/after demo.
 // ---------------------------------------------------------------------------
-const wd = { jumper: true, enabled: false, timeoutMs: 0, lastKick: 0, resets: 0 };
+const wd = { jumper: true, enabled: false, timeoutMs: 0, lastKick: 0, resets: 0, byHs: false };
 
 function onWatchdogByte(byte) {
   const c = String.fromCharCode(byte);
   if (c !== "\n") { s2 += c; return; }
   const line = s2.trim(); s2 = "";
   if (line.startsWith("WS")) wd.timeoutMs = parseInt(line.slice(2), 10) || 0;
-  else if (line === "WE") { wd.enabled = true; wd.lastKick = Date.now(); }
+  else if (line === "WE") { wd.enabled = wd.jumper; wd.byHs = true; wd.lastKick = Date.now(); }
   else if (line === "WD") wd.enabled = false;
   else if (line === "WK") wd.lastKick = Date.now();
 }
 
 setInterval(() => {
   if (!wd.jumper) { $("wd-state").textContent = "disconnected"; $("wd-kick").textContent = ""; return; }
-  if (!wd.enabled || !wd.timeoutMs) { $("wd-state").textContent = "waiting for Health & Safety"; $("wd-kick").textContent = ""; return; }
+  if (!wd.enabled || !wd.timeoutMs) { $("wd-state").textContent = "off"; $("wd-kick").textContent = ""; return; }
   const since = Date.now() - wd.lastKick;
-  $("wd-state").textContent = since > 2500 ? "no kicks!" : "armed";
+  $("wd-state").textContent = !wd.byHs ? "boot window" : since > 2500 ? "no kicks!" : "armed by Health & Safety";
   $("wd-kick").textContent = `· last kick ${(since / 1000).toFixed(1)}s ago (reset at ${(wd.timeoutMs / 1000).toFixed(0)}s)`;
   if (since > wd.timeoutMs && emu) {
     wd.enabled = false; wd.resets++; $("wd-resets").textContent = wd.resets;
+    if (!reachedOperational) { failedStreak++; $("fails").textContent = failedStreak; }
     logEvent(`[WATCHDOG] CRIT: no kick for ${(since / 1000).toFixed(1)}s: hardware reset #${wd.resets}, power-cycling the flight computer`);
     powerCycle();
   }
@@ -233,9 +320,13 @@ $("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
 $("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
 $("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); };
 $("wd-jumper").onclick = () => {
-  wd.jumper = !wd.jumper; if (wd.jumper) wd.lastKick = Date.now();
+  wd.jumper = !wd.jumper; if (wd.jumper) { wd.lastKick = Date.now(); if (!wd.byHs) wd.enabled = true; } else wd.enabled = false;
   $("wd-jumper").textContent = "Watchdog: " + (wd.jumper ? "ON" : "OFF"); $("wd-jumper").setAttribute("aria-pressed", String(wd.jumper));
 };
+
+$("st-hit").onclick = () => hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
+$("st-restore").onclick = restoreStorage;
+$("st-cycle").onclick = () => { logEvent("[GROUND] power cycle commanded"); powerCycle(); };
 
 // FAULT_INJ (commands 0x18C0)
 const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
