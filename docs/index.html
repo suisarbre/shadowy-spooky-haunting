@@ -49,7 +49,7 @@
   <div class="box"><h2>Telemetry packets by message ID</h2><pre id="tlm"></pre></div>
 </div>
 
-<script src="libv86.js"></script>
+<script src="libv86.js?v=2026103001"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const FSW_BTNS = ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"];
@@ -60,23 +60,27 @@ const status = (html) => { $("status").innerHTML = html; };
 // The flight computer: a v86 PC. The disk images are fetched once and kept,
 // so a watchdog power cycle can boot a fresh computer instantly.
 // ---------------------------------------------------------------------------
-let emu = null, files = null;
+// Bump BUILD whenever the VM images change, so browsers never mix a cached old
+// image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
+const BUILD = "2026103001";
+let emu = null, files = null, bootTimer = null;
 let con = "", s1 = "", s2 = "";
 let started = false, operational = false, probing = false, lastTlm = 0;
 
 async function loadFiles() {
-  const get = async (u) => ({ buffer: await (await fetch(u)).arrayBuffer() });
+  const get = async (u) => { const r = await fetch(`${u}?v=${BUILD}`); if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return { buffer: await r.arrayBuffer() }; };
   const [bios, vga_bios, bzimage, initrd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
   files = { bios, vga_bios, bzimage, initrd };
 }
 
 function powerOn() {
   con = ""; s1 = ""; s2 = ""; started = false; operational = false; probing = false;
+  clearTimeout(bootTimer); bootTimer = null;
   wd.enabled = false; wd.timeoutMs = 0;
   setFswButtons(false); $("b-start").disabled = true; $("age").textContent = "";
   status("booting flight computer…");
   emu = new V86({
-    wasm_path: "v86.wasm", ...files,
+    wasm_path: `v86.wasm?v=${BUILD}`, ...files,
     // fsw=auto: the VM boots straight into cFS, like a real flight computer
     cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
     memory_size: 128 * 1024 * 1024,
@@ -106,6 +110,10 @@ function onConsoleByte(b) {
   $("con").textContent = con; $("con").scrollTop = 1e9;
   const tail = con.slice(-300);
   if (/FSW-AUTOSTART/.test(con) && !started) { started = true; status("starting flight software…"); }
+  // Fallback: an image without autostart boots to a plain shell. Start cFS from here instead.
+  if (/VM-READY/.test(con) && !started && !bootTimer) {
+    bootTimer = setTimeout(() => { if (!started && emu) startFsw(); }, 4000);
+  }
   if (/entering OPERATIONAL/.test(con.slice(-4000)) && started && !operational) {
     operational = true; lastTlm = Date.now();
     status('<span class="ok">cFS OPERATIONAL</span>'); setFswButtons(true);
@@ -218,7 +226,8 @@ setInterval(() => {
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
-$("b-start").onclick = () => { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; status("starting flight software…"); sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
+function startFsw() { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; status("starting flight software…"); sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); }
+$("b-start").onclick = startFsw;
 $("b-tlm").onclick = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
 $("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
 $("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
