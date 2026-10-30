@@ -21,7 +21,8 @@
  * Corrections are treated as immediate, i.e. reads or scrubbing catch a flip
  * before a second one accumulates in the same word.
  *
- * Commands (MID 0x18C0):  0 NOOP, 1 RESET, 2 QUERY, 3 FLIP, 4 FLIP_RANDOM, 5 FLIP_SYMBOL, 6 SET_ECC
+ * Commands (MID 0x18C0):  0 NOOP, 1 RESET, 2 QUERY, 3 FLIP, 4 FLIP_RANDOM, 5 FLIP_SYMBOL, 6 SET_ECC,
+ *                         7 FLIP_TMR (one copy of a TMR_LIB region)
  * Telemetry (MID 0x08C0): housekeeping after every command and once a second
  */
 #define _GNU_SOURCE
@@ -33,6 +34,7 @@
 #include <sys/mman.h>
 
 #include "cfe.h"
+#include "tmr_lib.h"
 
 #define FAULT_INJ_CMD_MID 0x18C0
 #define FAULT_INJ_HK_MID  0x08C0
@@ -44,6 +46,7 @@
 #define FAULT_INJ_FLIP_RANDOM_CC 4
 #define FAULT_INJ_FLIP_SYMBOL_CC 5
 #define FAULT_INJ_SET_ECC_CC     6
+#define FAULT_INJ_FLIP_TMR_CC    7
 
 enum { REG_CODE = 0, REG_RODATA = 1, REG_DATA = 2, REG_BSS = 3, REG_COUNT = 4 };
 static const char *RegName[REG_COUNT] = {"code", "rodata", "data", "bss"};
@@ -83,6 +86,14 @@ typedef struct {
     uint8 Enabled;   /* 1 = ECC on, 0 = off */
     uint8 Spare[3];
 } FAULT_INJ_SetEccCmd_t;
+typedef struct {
+    CFE_MSG_CommandHeader_t Hdr;
+    char   Region[20]; /* TMR region name, e.g. "CALC" */
+    uint8  Copy;       /* 0, 1 or 2 */
+    uint8  BitMask;
+    uint16 Spare;
+    uint32 Offset;     /* byte offset into the copy (wrapped to its size) */
+} FAULT_INJ_FlipTmrCmd_t;
 
 /* ---- housekeeping telemetry ---- */
 typedef struct {
@@ -299,6 +310,29 @@ static bool SetEcc(const FAULT_INJ_SetEccCmd_t *c)
     return true;
 }
 
+static bool FlipTmr(const FAULT_INJ_FlipTmrCmd_t *c)
+{
+    char name[20]; uint8 o, n; CopyName(name, c->Region, sizeof name);
+    /* TMR_LIB is a cFS library with global symbols; look it up so FAULT_INJ does not depend on it */
+    union { void *obj; TMR_Region_t *(*fn)(const char *); } sym;   /* POSIX-blessed dlsym -> function pointer */
+    sym.obj = dlsym(RTLD_DEFAULT, "TMR_Find");
+    TMR_Region_t *(*find)(const char *) = sym.fn;
+    TMR_Region_t *r = find ? find(name) : NULL;
+    if (r == NULL || c->Copy >= TMR_COPIES || c->BitMask == 0)
+    {
+        CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "TMR: region %s copy %u not found (TMR_LIB %s)", name, c->Copy + 1, find ? "loaded" : "missing");
+        return false;
+    }
+    uint32 off = c->Offset % r->Size;
+    uintptr_t addr = (uintptr_t)r->Copy[c->Copy] + off;
+    int32 res = FlipByte(addr, c->BitMask, &o, &n);
+    if (res < 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "TMR: cannot write %lx", (unsigned long)addr); return false; }
+    char where[16]; snprintf(where, sizeof where, "copy %u", c->Copy + 1);
+    snprintf(FI.Hk.LastApp, sizeof FI.Hk.LastApp, "TMR %s", name); FI.Hk.LastRegion = 0xFE;
+    ReportHit(res, "TMR", name, where, (unsigned long)off, addr, o, n, c->BitMask);
+    return true;
+}
+
 static void ProcessCommand(const CFE_SB_Buffer_t *buf)
 {
     CFE_MSG_FcnCode_t fc = 0; CFE_MSG_Size_t len = 0; bool ok = false; size_t want = 0;
@@ -312,6 +346,7 @@ static void ProcessCommand(const CFE_SB_Buffer_t *buf)
         case FAULT_INJ_FLIP_RANDOM_CC: want = sizeof(FAULT_INJ_FlipRandomCmd_t); break;
         case FAULT_INJ_FLIP_SYMBOL_CC: want = sizeof(FAULT_INJ_FlipSymbolCmd_t); break;
         case FAULT_INJ_SET_ECC_CC:     want = sizeof(FAULT_INJ_SetEccCmd_t); break;
+        case FAULT_INJ_FLIP_TMR_CC:    want = sizeof(FAULT_INJ_FlipTmrCmd_t); break;
         default:
             CFE_EVS_SendEvent(EID_CMD_ERR, CFE_EVS_EventType_ERROR, "unknown function code %u", fc);
             FI.Hk.ErrCounter++; SendHk(); return;
@@ -333,6 +368,7 @@ static void ProcessCommand(const CFE_SB_Buffer_t *buf)
         case FAULT_INJ_FLIP_RANDOM_CC: ok = FlipRandom((const void *)buf); break;
         case FAULT_INJ_FLIP_SYMBOL_CC: ok = FlipSymbol((const void *)buf); break;
         case FAULT_INJ_SET_ECC_CC:     ok = SetEcc((const void *)buf); break;
+        case FAULT_INJ_FLIP_TMR_CC:    ok = FlipTmr((const void *)buf); break;
     }
     if (ok) FI.Hk.CmdCounter++; else FI.Hk.ErrCounter++;
     SendHk();

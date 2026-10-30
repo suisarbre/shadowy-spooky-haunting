@@ -28,6 +28,7 @@ No special server headers are needed: v86 runs single-threaded, so GitHub Pages 
 | 4 | FLIP_RANDOM | `App[20]`, `Region u8`, `spare u8`, `Count u16`, `Seed u32` (0 = time-based) |
 | 5 | FLIP_SYMBOL | `App[20]`, `Symbol[32]`, `Offset u32`, `BitMask u8`, `spare[3]` |
 | 6 | SET_ECC | `Enabled u8` (1 on, 0 off), `spare[3]` |
+| 7 | FLIP_TMR | `Region[20]`, `Copy u8` (0–2), `BitMask u8`, `spare u16`, `Offset u32`: hits one copy of a TMR_LIB region |
 
 Commands go to MID `0x18C0`; housekeeping comes back on `0x08C0` once a second. Regions: 0 code, 1 rodata, 2 data, 3 bss. App `CORE` targets the cFS executive itself. Offsets wrap to the region size, so the same (app, region, offset) always hits the same byte.
 
@@ -114,6 +115,29 @@ Measured in headless Chrome on a 2-core machine (`test/browser-modes.mjs`, 11/11
 | Single mode, code hits | Watchdog reset, back on its own |
 
 Memory stays at 128 MB per computer: at 64 MB the 12.5 MB filesystem no longer fits the kernel's boot layout.
+
+## Software TMR inside one computer
+
+The hardware profile asks for TMR in the kernel: every critical state transition or calculation done in three independent memory partitions and voted, with a corrupted partition overwritten from the other two without a reboot. That is implemented as a cFS service layer, not in the Linux kernel:
+
+- **`libs/tmr_lib`** (a cFS library, loaded before the apps). `TMR_Alloc` creates a region as three separate memory mappings, each followed by a guard page, so one upset cannot reach two copies. `TMR_Vote` takes the bitwise majority of the three copies, `(a & b) | (a & c) | (b & c)`, and overwrites any copy that differs. `TMR_SetEnabled(false)` drops to one copy with no voting, for comparison.
+- **`apps/tmr_calc`** (TMR_CALC). A calculator the ground can check: every second `Step += 1; Sum += Step`, so `Sum` must equal `Step × (Step + 1) / 2`. Each of the three copies does its own calculation from its own state, then the copies are voted. Because the sum accumulates, an error that gets through stays visible. Commands on `0x18C1` (0 NOOP, 1 RESET, 2 SET_TMR); results on `0x08C1` once a second, including each copy's value before the vote.
+- **FAULT_INJ `FLIP_TMR`** hits one chosen copy.
+
+The page's calculator panel shows step, the correct sum, the reported (voted) sum with ✓/✗, the three copies and which one was just outvoted, and buttons to hit each copy, both copies 1 and 2, toggle TMR, and reset.
+
+Tested in v86 (`test/test-tmr.mjs`, 12/12) and in Chrome (`test/browser-calc.mjs`, 10/10):
+
+| Scenario | Result |
+|---|---|
+| Hit copy 2 (sum field) | Copy 2 computes 20 instead of 36, is outvoted and repaired; answer stays right; no reboot |
+| Hit copy 3 (step field) | Repaired the same way |
+| Same bit in copies 1 and 2 | The wrong value wins the vote and the good copy is "repaired" to it; the sum stays wrong from then on |
+| TMR off, hit copy 2 | No effect (copy unused) |
+| TMR off, hit copy 1 | Answer wrong for good |
+| TMR back on | Copies agree again but past damage stays: TMR cannot undo an error it never saw |
+
+Limits worth stating: the data is triplicated but the code and the CPU are not, so a hit in the calculation code itself is not covered (ECC, the watchdog, or three computers cover that); and with ECC on, single-bit hits are corrected before TMR ever sees them.
 
 ## How it fits together
 

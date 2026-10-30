@@ -23,8 +23,16 @@ function (generate_cfs_startup_script CFS_INSTALL_DIR)
         "CFE_APP, sample_app,  SAMPLE_APP_Main,    SAMPLE_APP,   50,   32768, 0x0, 0;\n"
     )
 
+    # libraries must load before the apps that use them
+    list(FIND ARGN tmr_lib HAS_TMR_LIB)
+    if (HAS_TMR_LIB GREATER -1)
+        file (APPEND ${STARTUP_FILE}
+            "CFE_LIB, tmr_lib,     TMR_LIB_Init,       TMR_LIB,       0,   0,     0x0, 0;\n"
+        )
+    endif()
+
     # the rest of the apps can vary by config
-    set(CFS_APP_STARTUP_ORDER lc cf ds fm hk hs sc md cs sbn fault_inj)
+    set(CFS_APP_STARTUP_ORDER lc cf ds fm hk hs sc md cs sbn fault_inj tmr_calc)
     foreach(APP ${CFS_APP_STARTUP_ORDER})
         list(FIND ARGN ${APP} SHOULD_START)
         if (SHOULD_START GREATER -1)

@@ -58,6 +58,7 @@ TO_LAB_Subs_t TO_LAB_Subs =
         /* CFS App Subscriptions */
         {CFE_SB_MSGID_WRAP_VALUE(TO_LAB_HK_TLM_MID),          {0, 0}, 1},
         {CFE_SB_MSGID_WRAP_VALUE(0x08C0), {0, 0}, 4}, /* FAULT_INJ housekeeping */
+        {CFE_SB_MSGID_WRAP_VALUE(0x08C1), {0, 0}, 4}, /* TMR_CALC results */
         {CFE_SB_MSGID_WRAP_VALUE(TO_LAB_DATA_TYPES_MID),      {0, 0}, 1},
         {CFE_SB_MSGID_WRAP_VALUE(CI_LAB_HK_TLM_MID),          {0, 0}, 1},
 

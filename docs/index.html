@@ -33,6 +33,11 @@
   #status { font-weight:600; }
   .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
   #voter[hidden] { display:none; }
+  .calc { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:10px; }
+  .calc div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-variant-numeric:tabular-nums; }
+  .calc .k { display:block; color:var(--dim); font-size:12px; }
+  .calc b { font-size:16px; }
+  .calc .hit { border-color:var(--bad); }
 </style>
 </head>
 <body>
@@ -82,19 +87,31 @@
   <button id="st-cycle" disabled>Power cycle</button>
 </div>
 
+<h2 class="sec">Software TMR calculator on <span class="tname">A</span></h2>
+<p class="sub">TMR_CALC adds 1, 2, 3, … once a second, so the sum must be step × (step + 1) / 2. Its state is kept and computed in three memory partitions and voted every second. Keep ECC off to see TMR do the work.</p>
+<div class="calc" id="calc"></div>
+<div class="row">
+  <button id="c-tmr" disabled aria-pressed="true">Software TMR: ON</button>
+  <button id="c-hit1" disabled>Hit copy 1</button>
+  <button id="c-hit2" disabled>Hit copy 2</button>
+  <button id="c-hit3" disabled>Hit copy 3</button>
+  <button id="c-hit12" disabled>Hit copies 1 and 2 (same bit)</button>
+  <button id="c-reset" disabled>Reset calculator</button>
+</div>
+
 <div class="grid">
   <div class="box"><h2>Console of <span class="tname">A</span> (ttyS0)</h2><pre id="con"></pre></div>
   <div class="box"><h2>Events: <span class="tname">A</span> + ground</h2><pre id="evt"></pre></div>
   <div class="box"><h2>Telemetry of <span class="tname">A</span> by message ID</h2><pre id="tlm"></pre></div>
 </div>
 
-<script src="libv86.js?v=2026103004"></script>
+<script src="libv86.js?v=2026103005"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 // Bump BUILD whenever the VM images change, so browsers never mix a cached old
 // image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
-const BUILD = "2026103004";
+const BUILD = "2026103005";
 const BOOT_WINDOW_MS = 30000;   // watchdogs run from power-on; flight software must check in within this
 const SILENCE_MS = 6000;        // telemetry gap that counts as "computer down"
 const DISAGREE_MS = 12000;      // how long a computer may disagree before the voter acts (HK reports are a few s apart)
@@ -165,6 +182,10 @@ const CMD = {
   fiRandom: (app, region, count, seed) => cmdPacket(0x18c0, 4, cat(str(app, 20), new Uint8Array([REG[region], 0]), u16(count), u32(seed))),
   fiSymbol: (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20), str(sym, 32), u32(off), new Uint8Array([mask, 0, 0, 0]))),
   setEcc: (on) => cmdPacket(0x18c0, 6, new Uint8Array([on ? 1 : 0, 0, 0, 0])),
+  // one copy of a TMR region: name, copy 0..2, bit mask, offset (byte 4 = low byte of the sum)
+  fiTmr: (copy, off, mask) => cmdPacket(0x18c0, 7, cat(str("CALC", 20), new Uint8Array([copy, mask]), u16(0), u32(off))),
+  calcReset: () => cmdPacket(0x18c1, 1),
+  calcTmr: (on) => cmdPacket(0x18c1, 2, new Uint8Array([on ? 1 : 0, 0, 0, 0])),
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +201,7 @@ class FlightComputer {
     this.boots = 0; this.failedStreak = 0; this.wdResets = 0; this.resyncs = 0;
     this.events = []; this.tlmCounts = new Map();
     this.v = { ctr: null, flips: 0, ecc: false, eccC: 0, eccU: 0 };
+    this.calc = null;   // latest TMR_CALC report
     this.emu = null; this.disagreeSince = 0; this.downSince = 0; this.busy = false;
     this.powerOn();
   }
@@ -278,6 +300,11 @@ class FlightComputer {
       this.log(`${cstr(16, 20)} ${evType}: ${cstr(48, 122)}`);
     }
     if (mid === 0x0883) this.v.ctr = b(16);
+    if (mid === 0x08c1 && hex.length >= 136) {
+      this.calc = { step: u32at(16), sum: u32at(20), copies: [u32at(24), u32at(28), u32at(32)], steps: [u32at(36), u32at(40), u32at(44)],
+        repairs: u32at(48), on: b(64) === 1, mask: b(65), t: Date.now() };
+      if (this.calc.mask) this.lastRepair = { mask: this.calc.mask, copies: this.calc.copies.slice(), t: Date.now() };
+    }
     if (mid === 0x08c0) {
       this.v.flips = u32at(20);
       if (hex.length >= 128) { this.v.ecc = b(52) === 1; this.v.eccC = u32at(56); this.v.eccU = u32at(60); }
@@ -329,7 +356,7 @@ class FlightComputer {
         reachedOperational: true, autostartSeen: true, exitSeen: false, panicSeen: false, failedStreak: 0, lastTlm: Date.now(),
         disagreeSince: 0, downSince: 0 });
       this.wd = { ...src.wd, lastKick: Date.now(), enabled: watchdogsOn && src.wd.enabled };
-      this.v = { ...src.v }; this.resyncs++;
+      this.v = { ...src.v }; this.calc = src.calc && { ...src.calc }; this.resyncs++;
       this.setStatus(`<span class="ok">OPERATIONAL (resynced from ${src.name})</span>`);
       return ms;
     } catch (e) {
@@ -443,7 +470,8 @@ function render() {
       <div><span class="k">boots</span> ${c.boots} · <span class="k">failed in a row</span> ${c.failedStreak}${mode === "tmr" ? ` · <span class="k">resyncs</span> ${c.resyncs}` : ""}</div>
       <div><span class="k">SAMPLE_APP counter</span> ${c.v.ctr ?? "–"} · <span class="k">bits flipped</span> ${c.v.flips}</div>
       <div><span class="k">ECC</span> ${c.v.ecc ? "on" : "off"}, corrected ${c.v.eccC}, uncorrectable ${c.v.eccU}</div>
-      <div><span class="k">storage</span> ${c.diffBits()} bits differ from launch image</div></div>`;
+      <div><span class="k">storage</span> ${c.diffBits()} bits differ from launch image</div>
+      <div><span class="k">calculator</span> ${c.calc ? `step ${c.calc.step}, sum ${c.calc.sum} ${calcOk(c.calc) ? '<span class="ok">✓</span>' : '<span class="bad">✗ wrong</span>'}` : "–"}</div></div>`;
   }).join("");
   // overall status
   if (mode === "single") {
@@ -464,6 +492,29 @@ function render() {
   eccWanted = mode === "tmr" ? eccWanted : !!(t && t.v.ecc);
   $("f-ecc").textContent = "ECC: " + (eccWanted ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccWanted));
   for (const el of document.querySelectorAll(".tname")) el.textContent = t ? t.name : "";
+  renderCalc(t);
+}
+// the ground knows the right answer: 1 + 2 + … + step, modulo 2^32 like the flight code
+const calcExpected = (step) => Number((BigInt(step) * BigInt(step + 1) / 2n) & 0xffffffffn);
+const calcOk = (c) => c.sum === calcExpected(c.step);
+function renderCalc(t) {
+  const c = t && t.calc, up = t && t.operational && !t.busy && c;
+  for (const id of ["c-tmr", "c-hit1", "c-hit2", "c-hit3", "c-hit12", "c-reset"]) $(id).disabled = !up;
+  if (!c) { $("calc").innerHTML = '<div><span class="k">waiting for TMR_CALC telemetry…</span></div>'; return; }
+  const exp = calcExpected(c.step), good = calcOk(c);
+  const rep = t.lastRepair && Date.now() - t.lastRepair.t < 4000 ? t.lastRepair : null;   // show a repair for a few seconds
+  const copy = (k) => {
+    const wasBad = rep && rep.mask & (1 << k);
+    const note = !c.on && k > 0 ? "unused (TMR off)" : wasBad ? `computed ${rep.copies[k]}, outvoted → repaired` : "agrees";
+    return `<div class="${wasBad ? "hit" : ""}"><span class="k">copy ${k + 1}</span><b>${c.copies[k]}</b><span class="k">${note}</span></div>`;
+  };
+  $("calc").innerHTML = `
+    <div><span class="k">step</span><b>${c.step}</b></div>
+    <div><span class="k">correct sum</span><b>${exp}</b></div>
+    <div class="${good ? "" : "hit"}"><span class="k">reported sum (voted)</span><b class="${good ? "ok" : "bad"}">${c.sum} ${good ? "✓" : "✗"}</b></div>
+    ${copy(0)}${copy(1)}${copy(2)}
+    <div><span class="k">repairs without reboot</span><b>${c.repairs}</b></div>`;
+  $("c-tmr").textContent = "Software TMR: " + (c.on ? "ON" : "OFF"); $("c-tmr").setAttribute("aria-pressed", String(c.on));
 }
 function renderEvents() {
   const t = target(); const all = groundLog.concat(t ? t.events : []).sort((a, b) => a.t - b.t).slice(-80);
@@ -497,6 +548,13 @@ $("f-counter2").onclick = () => target().send(CMD.fiSymbol("SAMPLE_APP", "SAMPLE
 $("f-data").onclick = () => target().send(CMD.fiRandom("SAMPLE_APP", "data", 8, 0));
 $("f-code").onclick = () => { const c = target(); c.send(CMD.fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => c.send(CMD.sampleNoop()), i * 1200); };
 $("b-kill").onclick = () => target().sh("kill -9 $(pidof core-cpu1)");
+// software TMR: the setting is a ground command (all computers); the hits land on the target only
+$("c-tmr").onclick = () => { const t = target(); toAll(CMD.calcTmr(!(t.calc && t.calc.on))); };
+$("c-reset").onclick = () => toAll(CMD.calcReset());
+$("c-hit1").onclick = () => target().send(CMD.fiTmr(0, 4, 0x10));
+$("c-hit2").onclick = () => target().send(CMD.fiTmr(1, 4, 0x10));
+$("c-hit3").onclick = () => target().send(CMD.fiTmr(2, 4, 0x10));
+$("c-hit12").onclick = () => { const t = target(); t.send(CMD.fiTmr(0, 4, 0x10)); t.send(CMD.fiTmr(1, 4, 0x10)); };
 $("b-start").onclick = () => target().startFsw();
 $("st-hit").onclick = () => target().hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
 $("st-restore").onclick = () => target().restoreStorage();
