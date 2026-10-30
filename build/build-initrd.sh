@@ -6,7 +6,7 @@ R=$W/vm/rootfs
 rm -rf $R && mkdir -p $R/bin $R/sbin $R/usr/bin $R/usr/sbin $R/proc $R/sys $R/dev $R/tmp $R/lib $R/etc
 cp $W/busybox-1.36.1/busybox $R/bin/busybox
 ( cd $R/bin && for a in $(./busybox --list); do [ -e "$a" ] || ln -s busybox "$a"; done )
-cp $W/vm/serbridge $R/bin/
+cp $W/vm/serbridge $W/vm/memmap $R/bin/
 cp $W/vm/init $R/init
 # 32-bit glibc runtime needed by core-cpu1 and the app .so modules
 for l in ld-linux.so.2 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libgcc_s.so.1; do

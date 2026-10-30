@@ -139,6 +139,38 @@ Tested in v86 (`test/test-tmr.mjs`, 12/12) and in Chrome (`test/browser-calc.mjs
 
 Limits worth stating: the data is triplicated but the code and the CPU are not, so a hit in the calculation code itself is not covered (ECC, the watchdog, or three computers cover that); and with ECC on, single-bit hits are corrected before TMR ever sees them.
 
+## 3D hardware view and physical radiation hits
+
+The top of the page shows each flight computer as a circuit board with a RAM chip, a flash chip, a CPU and a watchdog. Drag to rotate, scroll or pinch to zoom, click or tap a chip to fire a particle. In TMR mode the three boards sit side by side (front to back on narrow screens).
+
+**Matching hardware to software.** A particle hits physical memory, not a process. Which software suffers depends on where the OS has placed it at that moment, so the page needs the same view the OS has:
+
+- `build/memmap.c` runs in the VM on a fourth serial port (ttyS3, a diagnostic port separate from the radio link). On request it walks every process's `/proc/<pid>/maps` and `/proc/<pid>/pagemap`, plus `/proc/iomem` for the kernel image, and reports runs of physical pages with their owner: process, module, and code/rodata/data/bss/heap/stack, the kernel, and TMR_LIB partitions (TMR_LIB records each copy's address in `/tmp/tmr_regions`).
+- The page refreshes this map when cFS comes up, after a resync, and every 15 s, and paints it on the RAM chip: **one pixel per 4 KB page**, coloured by owner. Hovering shows the physical address and what lives there.
+- A click becomes a physical address: the pixel picks the page, the position inside the pixel picks the byte and bit, so the same spot always hits the same bit. The page flips it directly in the emulated PC's RAM (`write_memory`), from outside the computer. No flight software takes part, unlike FAULT_INJ.
+- ECC for these hits is modeled where it belongs, in the memory controller: with ECC on, a 1-bit upset is corrected before software sees it and a 2-bit upset (the "2 adjacent bits" particle) lands and is counted as uncorrectable.
+- The flash chip maps the boot storage (kernel, then the filesystem image) the same way; a hit there is latent until the next boot, and damaged pages turn red. CPU and watchdog hits are reported as not modeled.
+
+FAULT_INJ stays for precise, repeatable software fault injection (and it is what would work on real hardware, where nothing can flip memory from outside). The beam is emulator-based fault injection.
+
+COM4 needs one workaround: Linux runs a loopback self-test on ttyS3 that v86's UART fails, so `init` declares it with `setserial /dev/ttyS3 uart 16550A`.
+
+Tested in v86 (`test/test-phys.mjs`, 8/8) and in Chrome (`test/browser-beam.mjs`, 8/8):
+
+| Target | Result |
+|---|---|
+| Memory map | ~880 runs in 2.5 s; of 32,768 pages, cFS owns ~1,600 (6.3 MB), the kernel image ~920; ~29,400 are free |
+| SAMPLE_APP's counter (virtual `0xb79…0c0` → physical `0x49f…0c0`) | Beam flips bit 4: its telemetry counter goes 0 → 16 |
+| TMR copy 2 | Outvoted and repaired |
+| Free memory | No effect, which is where most random hits land |
+| Flash, kernel image | Storage damaged; takes effect at the next boot |
+| CPU | Reported as not modeled |
+| TMR mode, board B | The hit lands on computer B |
+
+A finding for the paper: the three TMR copies were placed on **adjacent physical pages** (e.g. `0xb71`, `0xb72`, `0xb73`). Separate virtual allocations do not guarantee physical separation, so a multi-cell upset or a single failing chip could take out two copies at once; real systems place copies in different chips or banks.
+
+three.js r160 is bundled in `docs/vendor/` (MIT licence included) so the demo works offline.
+
 ## How it fits together
 
 ```
@@ -146,6 +178,8 @@ browser JS  --ttyS1 (hex lines)-->  serbridge  --UDP 1234-->  CI_LAB  --> cFS so
 browser JS  <--ttyS1 (hex lines)--  serbridge  <--UDP 2234--  TO_LAB  <-- cFS software bus
 browser JS  <--ttyS0-->  busybox shell (console, start/stop cFS)
 browser JS  <--ttyS2---  cFS Health & Safety -> PSP watchdog calls (hardware watchdog chip)
+browser JS  <--ttyS3-->  memmap (physical memory map, on request)
+browser JS  ---------->  emulated RAM / flash directly (radiation hits from the 3D view)
 ```
 
 - `C<hex>\n` from the page = one command packet; `T<hex>\n` from the VM = one telemetry packet.

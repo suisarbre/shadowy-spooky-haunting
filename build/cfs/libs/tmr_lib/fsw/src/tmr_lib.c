@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -41,6 +42,13 @@ TMR_Region_t *TMR_Alloc(const char *Name, uint32 Size)
         if (R->Copy[i] == NULL) return NULL;
     }
     TMR_RegionCount++;
+    /* publish where each copy lives, so diagnostics can show the partitions on a memory map */
+    FILE *f = fopen("/tmp/tmr_regions", "a");
+    if (f != NULL)
+    {
+        for (int i = 0; i < TMR_COPIES; i++) fprintf(f, "%s %d %lx %lx\n", R->Name, i, (unsigned long)R->Copy[i], (unsigned long)Size);
+        fclose(f);
+    }
     return R;
 }
 

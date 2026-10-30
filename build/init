@@ -12,6 +12,11 @@ hostname spacey-sat1
 echo "VM-READY $(cat /proc/uptime)"
 # serial bridge: browser <-> cFS UDP (ttyS1 is the data channel, ttyS0 is the console)
 /bin/serbridge /dev/ttyS1 2>/tmp/serbridge.log &
+# diagnostic port: physical memory map on request (exits quietly if ttyS3 is absent)
+rm -f /tmp/tmr_regions
+# COM4 fails Linux's loopback self-test under v86 and is left "unknown"; declare it a 16550A
+setserial /dev/ttyS3 uart 16550A 2>/dev/null
+/bin/memmap /dev/ttyS3 2>/tmp/memmap.log &
 # Flight computer mode: boot straight into the flight software (used by the demo page,
 # so a hardware watchdog reset brings cFS back with no one at the keyboard)
 if grep -q 'fsw=auto' /proc/cmdline; then
