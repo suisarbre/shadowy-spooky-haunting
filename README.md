@@ -15,6 +15,20 @@ The VM boots in about 10 s. The flight computer boots straight into cFS (about 1
 
 No special server headers are needed: v86 runs single-threaded, so GitHub Pages works as is.
 
+## Hardware profile: ISISPACE iOBC
+
+Each flight computer follows a common CubeSat on-board computer, the ISISPACE iOBC:
+
+| | iOBC | This emulation |
+|---|---|---|
+| CPU | 32-bit ARM9, 400 MHz | 32-bit x86 (v86 emulates only x86); cFS is the same code either way thanks to OSAL |
+| RAM | 64 MB SDRAM | 64 MB, plus ~9 MB where v86's loader stages the boot image (v86 always places it at the 64 MB mark; the kernel frees it after unpacking) |
+| Non-volatile, upset-immune memory | 512 KB FRAM | FRAM chip holding the boot record: boot count, failed boots in a row, last reset cause. Survives power cycles; beam hits have no effect |
+| Storage | SD card | SD card: kernel + root filesystem, hit-able, damage takes effect at the next boot |
+| OS | FreeRTOS | Linux. FreeRTOS would not add isolation (one address space, no processes) and has no dynamic loading; Linux gives a process boundary, app reload and `/proc` page maps |
+
+The VM image was trimmed for this: libraries live only in `lib32/` (the i386 loader's search path), the helpers are dynamically linked, the cFE test app is left out and modules are stripped (dynamic symbols kept), taking the root filesystem from 12.5 MB to 7.7 MB.
+
 ## FAULT_INJ: radiation upset simulator
 
 `build/cfs/apps/fault_inj` is a cFS app that flips bits in other apps' memory on command, like a single-event upset. It finds each target's code, read-only data, data and BSS regions from the loaded module's ELF segments, so hits can be aimed precisely and repeated exactly.
@@ -80,7 +94,7 @@ Tested in Chrome (`test/browser-storage.mjs`):
 
 | Storage hit (offset 0, bit 0) | Next boot |
 |---|---|
-| `lib/libc.so.6` (unused duplicate; the 32-bit loader uses `lib32/`) | Normal |
+| `cfs/cpu1/cf/cfe_test_tbl.tbl` (unused) | Normal |
 | `cfs/cpu1/cf/sample_app.so` | cFS logs `Could not load file:/cf/sample_app.so`, everything else runs |
 | `cfs/cpu1/core-cpu1` | ELF signature broken, the shell tries to run it as a script and fails: boot loop |
 | `kernel` + 20000, bit 3 | Boot loop |
@@ -147,7 +161,7 @@ The top of the page shows each flight computer as a circuit board with a RAM chi
 
 - `build/memmap.c` runs in the VM on a fourth serial port (ttyS3, a diagnostic port separate from the radio link). On request it walks every process's `/proc/<pid>/maps` and `/proc/<pid>/pagemap`, plus `/proc/iomem` for the kernel image, and reports runs of physical pages with their owner: process, module, and code/rodata/data/bss/heap/stack, the kernel, and TMR_LIB partitions (TMR_LIB records each copy's address in `/tmp/tmr_regions`).
 - The page refreshes this map when cFS comes up, after a resync, and every 15 s, and paints it on the RAM chip: **one pixel per 4 KB page**, coloured by owner. Hovering shows the physical address and what lives there.
-- A click becomes a physical address: the pixel picks the page, the position inside the pixel picks the byte and bit, so the same spot always hits the same bit. The page flips it directly in the emulated PC's RAM (`write_memory`), from outside the computer. No flight software takes part, unlike FAULT_INJ.
+- A click becomes a physical address. The RAM chip shows one row of 256 pixels per MB: the pixel picks the page, the position inside the pixel picks the byte and bit, so the same spot always hits the same bit. The page flips it directly in the emulated PC's RAM (`write_memory`), from outside the computer. No flight software takes part, unlike FAULT_INJ.
 - ECC for these hits is modeled where it belongs, in the memory controller: with ECC on, a 1-bit upset is corrected before software sees it and a 2-bit upset (the "2 adjacent bits" particle) lands and is counted as uncorrectable.
 - The flash chip maps the boot storage (kernel, then the filesystem image) the same way; a hit there is latent until the next boot, and damaged pages turn red. CPU and watchdog hits are reported as not modeled.
 

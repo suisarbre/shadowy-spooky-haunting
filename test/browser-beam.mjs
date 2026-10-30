@@ -39,7 +39,7 @@ const tc = await p.evaluate(() => ({ repairs: computers[0].calc.repairs, ok: cal
 result("beam at TMR copy 2: outvoted and repaired", tc.repairs > tmr.n0 && tc.ok, `pa ${tmr.pa}, what: ${tmr.h && tmr.h.what}; ${JSON.stringify(tc)}`);
 
 // 3) free memory
-const fr = await p.evaluate(() => { const c = computers[0]; let pg = 20000; while (c.map.pageRun[pg] >= 0) pg++; return beamAtAddress(0, pg * 4096 + 100); });
+const fr = await p.evaluate(() => { const c = computers[0]; let pg = 8000; while (c.map.pageRun[pg] >= 0) pg++; return beamAtAddress(0, pg * 4096 + 100); });
 await sleep(4000);
 const alive = await p.evaluate(() => computers[0].healthy(Date.now()) && calcOk(computers[0].calc));
 result("beam at free memory: no effect", fr && /free/.test(fr.what) && alive, fr && fr.what);
@@ -55,7 +55,7 @@ await p.screenshot({ path: "/home/claude/work/beam-b.png", clip: { x: 0, y: 0, w
 // 5) three boards in TMR mode; firing at B targets B
 await p.selectOption("#mode", "tmr");
 await until(() => computers.length === 3 && computers.every((c) => c.operational && c.map), null, 240000);
-const tb = await p.evaluate(() => { const c = computers[1]; let pg = 20000; while (c.map.pageRun[pg] >= 0) pg++; beamAtAddress(1, pg * 4096); return { target: $("target").value, log: document.getElementById("beamlog").textContent }; });
+const tb = await p.evaluate(() => { const c = computers[1]; let pg = 8000; while (c.map.pageRun[pg] >= 0) pg++; beamAtAddress(1, pg * 4096); return { target: $("target").value, log: document.getElementById("beamlog").textContent }; });
 result("TMR mode: 3 boards, beam on B hits B", tb.target === "1" && /^B /.test(tb.log), tb.log);
 await sleep(500);
 await p.screenshot({ path: "/home/claude/work/beam-c.png", clip: { x: 0, y: 0, width: 420, height: 700 } });

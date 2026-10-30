@@ -19,7 +19,7 @@ const emu = new V86({
   bzimage: buf(path.join(W, "../docs/bzImage")),
   initrd: buf(path.join(W, "../docs/initrd.gz")),
   cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3",
-  memory_size: 128 * 1024 * 1024,
+  memory_size: 72 * 1024 * 1024,
   uart1: true,
   autostart: true,
   disable_keyboard: true,

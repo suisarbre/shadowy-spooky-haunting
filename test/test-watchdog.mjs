@@ -21,7 +21,7 @@ let emu;
 function powerOn() {
   emu = new V86({
     wasm_path: path.join(W, "../node_modules/v86/build/v86.wasm"), ...files,
-    cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto", memory_size: 128 * 1024 * 1024,
+    cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto", memory_size: 72 * 1024 * 1024,
     uart1: true, uart2: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
   });
   emu.add_listener("serial0-output-byte", (b) => { con += String.fromCharCode(b); });

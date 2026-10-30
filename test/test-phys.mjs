@@ -16,7 +16,7 @@ const emu = new V86({
   wasm_path: path.join(W, "../node_modules/v86/build/v86.wasm"),
   bios: buf(path.join(W, "../docs/bios.bin")), vga_bios: buf(path.join(W, "../docs/vgabios.bin")),
   bzimage: buf(path.join(W, "../docs/bzImage")), initrd: buf(path.join(W, "../docs/initrd.gz")),
-  cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3", memory_size: 128 * 1024 * 1024,
+  cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3", memory_size: 72 * 1024 * 1024,
   uart1: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
 });
 
@@ -93,7 +93,7 @@ async function startCfs(log) {
 
     // 3) free memory: not mapped by anyone, not the kernel image
     const used = new Set(); for (const r of runs) for (let i = 0; i < r.n; i++) used.add(r.pfn + i); for (const k of kr) for (let i = 0; i < k.n; i++) used.add(k.pfn + i);
-    let freePfn = 0x6000; while (used.has(freePfn)) freePfn++;
+    let freePfn = 0x2000; while (used.has(freePfn)) freePfn++;
     for (let i = 0; i < 16; i++) flipPhys(freePfn * 4096 + i * 257, 1 << (i & 7));
     await sleep(6000);
     const alive = await sh("pidof core-cpu1 || echo dead"); const ch2 = latest(CALC_HK, Date.now() - 2000);

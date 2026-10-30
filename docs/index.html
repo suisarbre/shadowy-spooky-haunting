@@ -49,7 +49,7 @@
 </head>
 <body>
 <h1>NASA cFS running in the browser</h1>
-<p class="sub">Each flight computer is a v86 PC running 32-bit Linux and NASA cFS, with its own boot storage and hardware watchdog. In TMR mode three computers run side by side and a voter outside them masks a computer that disagrees, then resyncs it from a healthy one.</p>
+<p class="sub">Each flight computer follows the ISISPACE iOBC CubeSat profile (64 MB SDRAM, 512 KB FRAM, SD card, hardware watchdog), emulated by v86 as a 32-bit PC running Linux and NASA cFS. In TMR mode three computers run side by side and a voter outside them masks a computer that disagrees, then resyncs it from a healthy one.</p>
 <p>Status: <span id="status">loading…</span></p>
 
 <div class="row">
@@ -74,7 +74,7 @@
     <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS executable, heap, stacks</span>
     <span><i style="background:#2ea043"></i>cFS apps and libraries</span><span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies 1, 2, 3</span>
     <span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#3b4048"></i>other processes</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
-    <span><i style="background:#f85149"></i>damaged flash</span>
+    <span><i style="background:#f85149"></i>damaged SD card</span>
   </div>
 </div>
 <p id="beamlog"></p>
@@ -99,7 +99,7 @@
   <button id="b-start" disabled>Start flight software</button>
 </div>
 <div class="row" aria-label="Boot storage">
-  <label for="st-file">Storage file</label>
+  <label for="st-file">SD card file</label>
   <select id="st-file" disabled><option>loading…</option></select>
   <label for="st-off">offset</label>
   <input id="st-off" type="number" min="0" value="0" inputmode="numeric">
@@ -128,13 +128,13 @@
   <div class="box"><h2>Telemetry of <span class="tname">A</span> by message ID</h2><pre id="tlm"></pre></div>
 </div>
 
-<script src="libv86.js?v=2026103006"></script>
+<script src="libv86.js?v=2026103007"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 // Bump BUILD whenever the VM images change, so browsers never mix a cached old
 // image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
-const BUILD = "2026103006";
+const BUILD = "2026103007";
 const BOOT_WINDOW_MS = 30000;   // watchdogs run from power-on; flight software must check in within this
 const SILENCE_MS = 6000;        // telemetry gap that counts as "computer down"
 const DISAGREE_MS = 12000;      // how long a computer may disagree before the voter acts (HK reports are a few s apart)
@@ -155,6 +155,7 @@ async function loadAssets() {
   assets.kernel = new Uint8Array(await bz.arrayBuffer());
   assets.fs = new Uint8Array(await new Response(rd.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
   assets.files = parseCpio(assets.fs);
+  MEM_MB = MEM_MB_BASE + Math.ceil(assets.fs.length / 1048576) + 1; RAM_PAGES = MEM_MB * 256;
   $("st-file").innerHTML = [`<option value="kernel">kernel (bzImage, ${assets.kernel.length} bytes)</option>`]
     .concat(assets.files.map((f) => `<option value="${f.name}">${f.name} (${f.size} bytes)</option>`)).join("");
   $("st-file").value = "cfs/cpu1/core-cpu1";
@@ -221,7 +222,9 @@ class FlightComputer {
   constructor(name) {
     this.name = name;
     this.kernel = assets.kernel.slice(); this.fs = assets.fs.slice(); this.diffs = new Map();
-    this.boots = 0; this.failedStreak = 0; this.wdResets = 0; this.resyncs = 0;
+    // FRAM (512 KB on the iOBC): non-volatile and immune to single-event upsets, so it keeps
+    // the boot record across power cycles and radiation. The boot loader updates it.
+    this.boots = 0; this.failedStreak = 0; this.wdResets = 0; this.resyncs = 0; this.lastReset = "first power-on";
     this.events = []; this.tlmCounts = new Map();
     this.v = { ctr: null, flips: 0, ecc: false, eccC: 0, eccU: 0 };
     this.calc = null;   // latest TMR_CALC report
@@ -244,7 +247,7 @@ class FlightComputer {
       bzimage: { buffer: this.kernel.slice().buffer },   // boot from storage as it is now, damage included
       initrd: { buffer: this.fs.slice().buffer },
       cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
-      memory_size: 128 * 1024 * 1024,
+      memory_size: MEM_MB * 1024 * 1024,
       uart1: true, uart2: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
     });
     this.emu.add_listener("serial0-output-byte", (b) => this.onConsole(b));
@@ -253,7 +256,8 @@ class FlightComputer {
     this.emu.add_listener("serial3-output-byte", (b) => this.onDiag(b));   // ttyS3: diagnostic port (memory map)
     render();
   }
-  async powerCycle() {
+  async powerCycle(reason = "power cycle") {
+    this.lastReset = reason;
     const old = this.emu; this.emu = null; clearTimeout(this.bootTimer);
     try { await old.destroy(); } catch (e) { /* already gone */ }
     this.powerOn();
@@ -359,7 +363,7 @@ class FlightComputer {
       this.wd.enabled = false; this.wdResets++;
       if (!this.reachedOperational) this.failedStreak++;
       this.log(`WATCHDOG CRIT: no kick for ${((now - this.wd.lastKick) / 1000).toFixed(1)}s: hardware reset, power-cycling`);
-      this.powerCycle(); return;
+      this.powerCycle("watchdog"); return;
     }
     if (this.operational && now - this.lastTlm > SILENCE_MS && !this.probing) {
       this.probing = true; this.setStatus('<span class="bad">telemetry lost, checking…</span>');
@@ -445,7 +449,7 @@ class FlightComputer {
     const key = (area === this.kernel ? "k" : "f") + abs;
     const x = (this.diffs.get(key) || 0) ^ mask;
     if (x) this.diffs.set(key, x); else this.diffs.delete(key);
-    this.log(`BEAM FLASH byte ${index} mask 0x${hex2(mask)}: ${what} (${hex2(before)}->${hex2(area[abs])}), takes effect at the next boot`);
+    this.log(`BEAM SD CARD byte ${index} mask 0x${hex2(mask)}: ${what} (${hex2(before)}->${hex2(area[abs])}), takes effect at the next boot`);
     render(); window.onFlashUpdate && window.onFlashUpdate(this);
     return { what };
   }
@@ -470,7 +474,11 @@ class FlightComputer {
 // ---------------------------------------------------------------------------
 // Physical memory map helpers (shared with the 3D view)
 // ---------------------------------------------------------------------------
-const RAM_PAGES = 32768;   // 128 MB of 4 KB pages
+// iOBC-class SDRAM is 64 MB. v86's loader always places the root filesystem image
+// at the 64 MB mark, so the emulated PC gets just enough extra RAM to hold it
+// (the kernel frees that area right after unpacking the image).
+const MEM_MB_BASE = 64;
+let MEM_MB = 72, RAM_PAGES = MEM_MB * 256;
 const popcount = (m) => { let n = 0; for (let x = m; x; x >>= 1) n += x & 1; return n; };
 const hex2 = (v) => v.toString(16).padStart(2, "0");
 const LIBS = /^(libc|libm|ld-linux|libgcc|libpthread|librt|libdl)/;
@@ -596,10 +604,10 @@ function render() {
     return `<div class="card${c === t ? " target" : ""}"><h3><span>Computer ${c.name}</span>${vote}</h3>
       <div>${c.statusHtml || ""}</div>
       <div><span class="k">watchdog</span> ${wd} · <span class="k">resets</span> ${c.wdResets}</div>
-      <div><span class="k">boots</span> ${c.boots} · <span class="k">failed in a row</span> ${c.failedStreak}${mode === "tmr" ? ` · <span class="k">resyncs</span> ${c.resyncs}` : ""}</div>
+      <div><span class="k">FRAM boot record</span> boot #${c.boots} · failed in a row ${c.failedStreak} · last reset: ${c.lastReset}${mode === "tmr" ? ` · <span class="k">resyncs</span> ${c.resyncs}` : ""}</div>
       <div><span class="k">SAMPLE_APP counter</span> ${c.v.ctr ?? "–"} · <span class="k">bits flipped</span> ${c.v.flips}</div>
       <div><span class="k">ECC</span> ${eccWanted ? "on" : "off"}, corrected ${c.v.eccC + c.hw.corrected}, uncorrectable ${c.v.eccU + c.hw.uncorrectable}</div>
-      <div><span class="k">storage</span> ${c.diffBits()} bits differ from launch image</div>
+      <div><span class="k">SD card</span> ${c.diffBits()} bits differ from the launch image</div>
       <div><span class="k">calculator</span> ${c.calc ? `step ${c.calc.step}, sum ${c.calc.sum} ${calcOk(c.calc) ? '<span class="ok">✓</span>' : '<span class="bad">✗ wrong</span>'}` : "–"}</div></div>`;
   }).join("");
   // overall status
@@ -686,7 +694,7 @@ $("c-hit12").onclick = () => { const t = target(); t.send(CMD.fiTmr(0, 4, 0x10))
 $("b-start").onclick = () => target().startFsw();
 $("st-hit").onclick = () => target().hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
 $("st-restore").onclick = () => target().restoreStorage();
-$("st-cycle").onclick = () => { const c = target(); logGround(`[GROUND] power cycle commanded for ${c.name}`); c.powerCycle(); };
+$("st-cycle").onclick = () => { const c = target(); logGround(`[GROUND] power cycle commanded for ${c.name}`); c.powerCycle("ground command"); };
 
 // repaint watchdog countdowns
 setInterval(render, 1000);
@@ -709,7 +717,7 @@ import { OrbitControls } from "./vendor/OrbitControls.js";   // three.js r160, b
 
 const COLORS = { free: "#161b22", kernel: "#8957e5", cfs: "#1f6feb", app: "#2ea043", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
 const RGB = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)]]));
-const RAM_W = 256, RAM_H = 128;          // 32768 pages
+const RAM_W = 256;                        // RAM rows follow the memory size: one pixel per 4 KB page
 const FLASH_W = 64;
 const BOARD_GAP = 10.5;
 
@@ -761,12 +769,14 @@ function buildBoards() {
     g.fillStyle = "#0e3b2c"; g.fillRect(0, 0, 900, 600); g.strokeStyle = "#1d6b4f"; g.lineWidth = 3;
     for (let k = 0; k < 14; k++) { g.beginPath(); g.moveTo(40 + k * 60, 560); g.lineTo(40 + k * 60, 420); g.lineTo(80 + k * 50, 330); g.stroke(); }
     g.fillStyle = "#d8f3e6"; g.font = "24px system-ui, sans-serif";
-    g.fillText("RAM 128 MB (1 pixel = one 4 KB page)", 40, 44); g.fillText("FLASH", 620, 44); g.fillText("CPU", 140, 588); g.fillText("WATCHDOG", 430, 588);
+    g.fillText(`SDRAM ${MEM_MB_BASE} MB (+${MEM_MB - MEM_MB_BASE} MB boot staging) · 1 pixel = 4 KB`, 40, 44); g.fillText("SD CARD", 620, 44);
+    g.fillText("CPU (ARM9-class, emulated x86)", 40, 588); g.fillText("WDT", 445, 588); g.fillText("FRAM 512 KB", 680, 520);
     g.font = "bold 26px system-ui, sans-serif"; g.fillText(`FLIGHT COMPUTER ${c.name}`, 610, 588);
     const pcb = chip(9, 6, 0.16, silk, "#0b2e22"); pcb.userData.kind = "board"; group.add(pcb);
     // RAM: one pixel per physical page
+    const RAM_H = Math.ceil(RAM_PAGES / RAM_W);
     const ramC = document.createElement("canvas"); ramC.width = RAM_W; ramC.height = RAM_H;
-    const ram = chip(5, 2.5, 0.22, ramC); ram.position.set(-1.6, 0.19, -0.95); ram.userData.kind = "ram"; group.add(ram);
+    const ram = chip(5, Math.max(1.2, 5 * RAM_H / RAM_W), 0.22, ramC); ram.position.set(-1.6, 0.19, -0.95); ram.userData.kind = "ram"; group.add(ram);
     // flash: one pixel per 4 KB of boot storage
     const flashBytes = assets.kernel.length + assets.fs.length, flashPages = Math.ceil(flashBytes / 4096), flashH = Math.ceil(flashPages / FLASH_W);
     const flC = document.createElement("canvas"); flC.width = FLASH_W; flC.height = flashH;
@@ -774,9 +784,10 @@ function buildBoards() {
     flash.userData.pages = flashPages;
     const cpu = chip(2.1, 2.1, 0.3, labelCanvas("CPU")); cpu.position.set(-2.9, 0.23, 1.65); cpu.userData.kind = "cpu"; group.add(cpu);
     const wdt = chip(1.1, 1.1, 0.22, labelCanvas("WDT", 128, 128)); wdt.position.set(0.6, 0.19, 1.85); wdt.userData.kind = "wdt"; group.add(wdt);
-    for (const m of [pcb, ram, flash, cpu, wdt]) m.userData.computer = c;
+    const fram = chip(1.4, 1.0, 0.2, labelCanvas("FRAM", 192, 128)); fram.position.set(2.8, 0.18, 1.3); fram.userData.kind = "fram"; group.add(fram);
+    for (const m of [pcb, ram, flash, cpu, wdt, fram]) m.userData.computer = c;
     scene.add(group);
-    const b = { c, group, ram, flash, cpu, wdt, pickables: [ram, flash, cpu, wdt, pcb] };
+    const b = { c, group, ram, flash, cpu, wdt, fram, pickables: [ram, flash, cpu, wdt, fram, pcb] };
     boards.push(b);
     drawRam(b); drawFlash(b);
   });
@@ -795,8 +806,8 @@ function frame() {
 }
 
 function drawRam(b) {
-  const g = b.ram.userData.canvas.getContext("2d"), img = g.createImageData(RAM_W, RAM_H), d = img.data, map = b.c.map;
-  for (let p = 0; p < RAM_W * RAM_H; p++) {
+  const cv = b.ram.userData.canvas, g = cv.getContext("2d"), img = g.createImageData(cv.width, cv.height), d = img.data, map = b.c.map;
+  for (let p = 0; p < cv.width * cv.height; p++) {
     const r = map ? map.pageRun[p] : -1;
     const col = RGB[r >= 0 ? map.runs[r].cat : "free"] || RGB.other;
     d[p * 4] = col[0]; d[p * 4 + 1] = col[1]; d[p * 4 + 2] = col[2]; d[p * 4 + 3] = 255;
@@ -841,15 +852,16 @@ function resolve(m, cu, cv, point) {
   const nb = +document.getElementById("beam").value;
   res.mask = nb === 1 ? 1 << bit : bit <= 6 ? 3 << bit : 0xc0;
   if (kind === "ram") { res.pa = page * 4096 + byteInPage; res.what = c.describe(res.pa).label; }
-  else { res.index = page * 4096 + byteInPage; res.what = page < m.userData.pages ? describeFlash(res.index) : "unused flash"; res.valid = page < m.userData.pages; }
+  else { res.index = page * 4096 + byteInPage; res.what = page < m.userData.pages ? describeFlash(res.index) : "unused SD card space"; res.valid = page < m.userData.pages; }
   return res;
 }
 function describePick(p) {
   if (!p) return "";
   const who = `computer ${p.c.name}`;
   if (p.kind === "ram" && p.onTop) return `${who} · RAM 0x${p.pa.toString(16).padStart(7, "0")} · ${p.what}`;
-  if (p.kind === "flash" && p.onTop) return `${who} · flash byte ${p.index} · ${p.what}`;
+  if (p.kind === "flash" && p.onTop) return `${who} · SD card byte ${p.index} · ${p.what}`;
   if (p.kind === "cpu") return `${who} · CPU (registers and caches are not modeled: hits have no effect)`;
+  if (p.kind === "fram") return `${who} · FRAM boot record: boot #${p.c.boots}, failed in a row ${p.c.failedStreak}, last reset ${p.c.lastReset} (ferroelectric cells: immune to bit flips)`;
   if (p.kind === "wdt") return `${who} · watchdog chip (modeled as radiation-hardened: no effect)`;
   if (p.kind === "board") return `${who} · circuit board`;
   return `${who} · chip side`;
@@ -874,8 +886,8 @@ function fire(p) {
     const r = p.c.hitRam(p.pa, p.mask);
     msg = r ? `${p.c.name} RAM 0x${p.pa.toString(16).padStart(7, "0")} mask 0x${hex2(p.mask)} → ${r.what.label}: ${r.result}` : `${p.c.name} is powering up: no hit`;
   } else if (p.kind === "flash" && p.onTop) {
-    if (!p.valid) msg = `${p.c.name} flash: unused area, no effect`;
-    else { p.c.hitFlash(p.index, p.mask); msg = `${p.c.name} flash byte ${p.index} mask 0x${hex2(p.mask)} → ${p.what}: latent until the next boot`; }
+    if (!p.valid) msg = `${p.c.name} SD card: unused area, no effect`;
+    else { p.c.hitFlash(p.index, p.mask); msg = `${p.c.name} SD card byte ${p.index} mask 0x${hex2(p.mask)} → ${p.what}: latent until the next boot`; }
   } else { msg = describePick(p); p.c.log(`BEAM ${p.kind.toUpperCase()}: no effect in this model`); }
   beamlog.textContent = msg;
   showBeam(p.point, p.kind === "ram" || p.kind === "flash" ? 0xff5a4f : 0x8b949e);
@@ -902,7 +914,8 @@ window.beamAt = (computerIndex, kind, u, v) => {
 // aim at a physical address (finds the pixel for that page)
 window.beamAtAddress = (computerIndex, pa) => {
   const page = pa >>> 12, col = page % RAM_W, row = (page / RAM_W) | 0, byte = pa & 4095;
-  const u = (col + ((byte % 64) + 0.5) / 64) / RAM_W, v = (row + (((byte / 64) | 0) + 0.5) / 64) / RAM_H;
+  const H = boards[computerIndex] ? boards[computerIndex].ram.userData.canvas.height : 1;
+  const u = (col + ((byte % 64) + 0.5) / 64) / RAM_W, v = (row + (((byte / 64) | 0) + 0.5) / 64) / H;
   return window.beamAt(computerIndex, "ram", u, v);
 };
 
