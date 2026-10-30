@@ -27,17 +27,22 @@ No special server headers are needed: v86 runs single-threaded, so GitHub Pages 
 | 3 | FLIP one byte | `App[20]`, `Region u8`, `BitMask u8`, `spare u16`, `Offset u32` |
 | 4 | FLIP_RANDOM | `App[20]`, `Region u8`, `spare u8`, `Count u16`, `Seed u32` (0 = time-based) |
 | 5 | FLIP_SYMBOL | `App[20]`, `Symbol[32]`, `Offset u32`, `BitMask u8`, `spare[3]` |
+| 6 | SET_ECC | `Enabled u8` (1 on, 0 off), `spare[3]` |
 
 Commands go to MID `0x18C0`; housekeeping comes back on `0x08C0` once a second. Regions: 0 code, 1 rodata, 2 data, 3 bss. App `CORE` targets the cFS executive itself. Offsets wrap to the region size, so the same (app, region, offset) always hits the same byte.
 
-Tested in v86 (`test/test-fault.mjs`, 11/11 pass):
+**Simulated ECC.** The emulated PC has plain RAM, so error-correcting memory is modeled inside FAULT_INJ, standing in for the memory controller. With ECC on, a single-bit hit is corrected before software sees it (memory unchanged, counted, reported as an event); a multi-bit hit in one byte is detected but uncorrectable, so the data is corrupted and a critical event is raised. Corrections are treated as immediate, as if reads or scrubbing catch each flip before a second one lands in the same word. Housekeeping adds `EccEnabled` (byte 52), `EccCorrected` (u32 at 56) and `EccUncorrectable` (u32 at 60).
+
+Tested in v86 (`test/test-fault.mjs`, 15/15 pass):
 
 - Flipping bit 7 of `SAMPLE_APP_Data` makes SAMPLE_APP's telemetry command counter jump from 0 to 128.
 - The same FLIP twice hits the same address and restores the original value.
 - 8 random hits in SAMPLE_APP's data: flight software keeps running.
 - 40 random hits in SAMPLE_APP's code, then commanding it: **the whole flight software process crashes**, Health & Safety included, and a restart comes back as a processor reset in ~3 s.
 
-That last result is the point of the demo: on Linux, cFS runs every app as a thread in one process with no memory isolation between apps, so one corrupted app can take down everything. Real missions answer this with partitioned operating systems and an external hardware watchdog.
+- With ECC on: a 1-bit hit on the counter is corrected (stays 0), a 2-bit hit gets through (0 → 129) and is flagged uncorrectable, and the same 40 code hits that crashed everything are all corrected, so the flight software survives.
+
+The crash result is the point of the demo: on Linux, cFS runs every app as a thread in one process with no memory isolation between apps, so one corrupted app can take down everything. Real missions answer this with partitioned operating systems and an external hardware watchdog.
 
 To add it to a cFS tree: copy `apps/fault_inj` into `apps/`, and use the three files in `build/cfs/sample_defs/` (adds `fault_inj` to the cpu1 app list and startup script, and subscribes TO_LAB to `0x08C0`).
 

@@ -42,6 +42,7 @@ const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
 const query = (app) => cmdPacket(FI, 2, str(app, 20));
 const flip = (app, region, offset, mask) => cmdPacket(FI, 3, Buffer.concat([str(app, 20), u8(REG[region]), u8(mask), u16(0), u32(offset)]));
 const flipRandom = (app, region, count, seed) => cmdPacket(FI, 4, Buffer.concat([str(app, 20), u8(REG[region]), u8(0), u16(count), u32(seed)]));
+const setEcc = (on) => cmdPacket(FI, 6, Buffer.from([on ? 1 : 0, 0, 0, 0]));
 const flipSym = (app, sym, offset, mask) => cmdPacket(FI, 5, Buffer.concat([str(app, 20), str(sym, 32), u32(offset), u8(mask), Buffer.alloc(3)]));
 
 async function startCfs(log) {
@@ -111,6 +112,31 @@ async function startCfs(log) {
       const rt = await sh("grep -oE 'PROCESSOR RESET|POWERON RESET|Reset Type[^\\n]*' /tmp/cfs2.log | head -1");
       record("Watchdog-style restart after crash", ok, rt);
     }
+
+    // ---- ECC on ----
+    send(cmdPacket(0x1880, 6, str("127.0.0.1", 16))); await sleep(2500);
+    t = Date.now(); send(setEcc(true));
+    try { record("SET_ECC on", true, await waitEvent(/ECC ON/, t)); } catch (e) { record("SET_ECC on", false, e.message); }
+    await sleep(6500);
+    const c0 = (latest(SAMPLE_HK, Date.now() - 7000) || { bytes: [] }).bytes[16];
+    t = Date.now(); send(flipSym("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80));
+    const ec1 = await waitEvent(/ECC corrected/, t).catch((e) => e.message);
+    await sleep(7000);
+    const c1 = (latest(SAMPLE_HK, t) || { bytes: [] }).bytes[16];
+    record("ECC corrects a 1-bit hit (counter unchanged)", c0 !== undefined && c1 === c0, `counter ${c0} -> ${c1}; ${ec1}`);
+    t = Date.now(); send(flipSym("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81));
+    const ec2 = await waitEvent(/UNCORRECTABLE/, t).catch((e) => e.message);
+    await sleep(7000);
+    const c2 = (latest(SAMPLE_HK, t) || { bytes: [] }).bytes[16];
+    record("ECC detects a 2-bit hit but cannot fix it", c2 === (c1 ^ 0x81), `counter ${c1} -> ${c2}; ${ec2}`);
+    t = Date.now(); send(flipRandom("SAMPLE_APP", "code", 40, 777));
+    await waitEvent(/ECC corrected 1-bit RANDOM/, t).catch(() => {});
+    for (let i = 0; i < 5; i++) { send(cmdPacket(0x1882, 0)); await sleep(1500); }
+    await sleep(4000);
+    const alive2 = await sh("pidof core-cpu1 || echo dead");
+    const hk2 = latest(FI_HK, t);
+    const corr = hk2 ? hk2.bytes.readUInt32LE(56) : -1, unc = hk2 ? hk2.bytes.readUInt32LE(60) : -1;
+    record("Same 40 code hits with ECC on: flight software survives", alive2 !== "dead", `ECC corrected=${corr}, uncorrectable=${unc}`);
 
     console.log("\n---- events ----\n" + tlm.filter((m) => m.mid === 0x0808).map(evText).filter((s) => /FAULT_INJ|SAMPLE_APP|CFE_ES/.test(s)).slice(-14).join("\n"));
   } catch (e) {

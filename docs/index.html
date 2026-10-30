@@ -13,6 +13,7 @@
   button { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--acc); }
   button:disabled { opacity:.5; cursor:default; }
+  button[aria-pressed="true"] { border-color:var(--ok); color:var(--ok); }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; }
   .box { background:var(--panel); border:1px solid #30363d; border-radius:8px; padding:10px; min-width:0; }
   .box h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
@@ -33,11 +34,13 @@
 </div>
 <div class="row" aria-label="Fault injection">
   <button id="f-query" class="fi" disabled>Map SAMPLE_APP memory</button>
-  <button id="f-counter" class="fi" disabled>Hit SAMPLE_APP counter</button>
+  <button id="f-ecc" class="fi" disabled aria-pressed="false">ECC: OFF</button>
+  <button id="f-counter" class="fi" disabled>Hit SAMPLE_APP counter (1 bit)</button>
+  <button id="f-counter2" class="fi" disabled>Hit SAMPLE_APP counter (2 bits)</button>
   <button id="f-data" class="fi" disabled>8 random data hits</button>
   <button id="f-code" class="fi" disabled>40 random code hits</button>
 </div>
-<p class="sub">SAMPLE_APP command counter (from its telemetry): <b id="ctr">–</b> &nbsp; FAULT_INJ bits flipped: <b id="flips">0</b></p>
+<p class="sub">SAMPLE_APP command counter (from its telemetry): <b id="ctr">–</b> &nbsp; FAULT_INJ bits flipped: <b id="flips">0</b> &nbsp; ECC corrected: <b id="ecc-c">0</b> &nbsp; ECC uncorrectable: <b id="ecc-u">0</b></p>
 <div class="grid">
   <div class="box"><h2>VM console (ttyS0)</h2><pre id="con"></pre></div>
   <div class="box"><h2>cFS events (from telemetry)</h2><pre id="evt"></pre></div>
@@ -66,9 +69,9 @@ emu.add_listener("serial0-output-byte", (b) => {
   if (con.length > 20000) con = con.slice(-15000);
   $("con").textContent = con; $("con").scrollTop = 1e9;
   if (/VM-READY/.test(con) && $("b-start").disabled && !started) { $("status").textContent = "VM ready"; $("b-start").disabled = false; }
-  if (/FSW-DOWN\r?\n/.test(con.slice(-200)) && started) { started = false; operational = false; probing = false; $("status").innerHTML = '<span class="bad">flight software crashed: complete failure</span>'; $("age").textContent = ""; $("b-start").disabled = false; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = true; con += "\n"; }
+  if (/FSW-DOWN\r?\n/.test(con.slice(-200)) && started) { started = false; operational = false; probing = false; $("status").innerHTML = '<span class="bad">flight software crashed: complete failure</span>'; $("age").textContent = ""; $("b-start").disabled = false; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"]) $(id).disabled = true; con += "\n"; }
   if (/FSW-ALIVE\r?\n/.test(con.slice(-200)) && probing) { probing = false; lastTlm = Date.now(); $("status").innerHTML = '<span class="bad">no telemetry, but the process is alive (hung?)</span>'; con += "\n"; }
-  if (/OPERATIONAL/.test(con.slice(-4000)) && started && !operational) { operational = true; lastTlm = Date.now(); $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = false; send(cmdPacket(0x1880, 6, str("127.0.0.1", 16))); }
+  if (/OPERATIONAL/.test(con.slice(-4000)) && started && !operational) { operational = true; lastTlm = Date.now(); $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"]) $(id).disabled = false; send(cmdPacket(0x1880, 6, str("127.0.0.1", 16))); }
 });
 let started = false, operational = false, probing = false, lastTlm = 0;
 // Ground-station style health check: telemetry normally arrives every second
@@ -99,7 +102,9 @@ emu.add_listener("serial1-output-byte", (b) => {
       evts.push(`[${cstr(16, 20)}] ${evType}: ${cstr(48, 122)}`); $("evt").textContent = evts.slice(-60).join("\n"); $("evt").scrollTop = 1e9;
     }
     if (mid === 0x0883) $("ctr").textContent = parseInt(hex.substr(32, 2), 16);
-    if (mid === 0x08c0) { const b = (i) => parseInt(hex.substr(i * 2, 2), 16); $("flips").textContent = b(20) | (b(21) << 8) | (b(22) << 16) | (b(23) << 24); }
+    if (mid === 0x08c0) { const b = (i) => parseInt(hex.substr(i * 2, 2), 16); const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
+      $("flips").textContent = u32at(20);
+      if (hex.length >= 128) { eccOn = b(52) === 1; $("f-ecc").textContent = "ECC: " + (eccOn ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccOn)); $("ecc-c").textContent = u32at(56); $("ecc-u").textContent = u32at(60); } }
     $("tlm").textContent = [...counts].sort((a, b) => a[0] - b[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
   }
   s1 = "";
@@ -131,6 +136,9 @@ const fiSymbol = (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20),
 const tlmOn = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
 $("f-query").onclick = () => { tlmOn(); send(fiQuery("SAMPLE_APP")); };
 $("f-counter").onclick = () => { tlmOn(); send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80)); };
+$("f-counter2").onclick = () => { tlmOn(); send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81)); };
+let eccOn = false;
+$("f-ecc").onclick = () => send(cmdPacket(0x18c0, 6, new Uint8Array([eccOn ? 0 : 1, 0, 0, 0])));
 $("f-data").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "data", 8, 0)); };
 $("f-code").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); };
 </script>

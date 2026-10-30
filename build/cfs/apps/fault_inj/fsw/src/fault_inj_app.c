@@ -13,7 +13,15 @@
  * Read-only or executable pages are briefly made writable to apply the flip,
  * then restored, so code corruption behaves like a real upset in ROM/RAM.
  *
- * Commands (MID 0x18C0):  0 NOOP, 1 RESET, 2 QUERY, 3 FLIP, 4 FLIP_RANDOM, 5 FLIP_SYMBOL
+ * Simulated ECC (error-correcting memory), off by default like the emulated PC:
+ *   on  - a single-bit hit is corrected before software sees it (memory unchanged,
+ *         counted and reported); a multi-bit hit in one byte is detected but
+ *         uncorrectable, so the data is corrupted and a critical event is raised
+ *   off - every hit lands in memory
+ * Corrections are treated as immediate, i.e. reads or scrubbing catch a flip
+ * before a second one accumulates in the same word.
+ *
+ * Commands (MID 0x18C0):  0 NOOP, 1 RESET, 2 QUERY, 3 FLIP, 4 FLIP_RANDOM, 5 FLIP_SYMBOL, 6 SET_ECC
  * Telemetry (MID 0x08C0): housekeeping after every command and once a second
  */
 #define _GNU_SOURCE
@@ -35,12 +43,13 @@
 #define FAULT_INJ_FLIP_CC        3
 #define FAULT_INJ_FLIP_RANDOM_CC 4
 #define FAULT_INJ_FLIP_SYMBOL_CC 5
+#define FAULT_INJ_SET_ECC_CC     6
 
 enum { REG_CODE = 0, REG_RODATA = 1, REG_DATA = 2, REG_BSS = 3, REG_COUNT = 4 };
 static const char *RegName[REG_COUNT] = {"code", "rodata", "data", "bss"};
 
 /* Event IDs */
-enum { EID_INIT = 1, EID_NOOP, EID_RESET, EID_QUERY, EID_FLIP, EID_ERR, EID_CMD_ERR };
+enum { EID_INIT = 1, EID_NOOP, EID_RESET, EID_QUERY, EID_FLIP, EID_ERR, EID_CMD_ERR, EID_ECC_MODE, EID_ECC_CORRECTED, EID_ECC_UNCORRECTABLE };
 
 /* ---- command payloads (little-endian, packed to match the browser encoder) ---- */
 typedef struct { CFE_MSG_CommandHeader_t Hdr; } FAULT_INJ_NoArgsCmd_t;
@@ -69,6 +78,11 @@ typedef struct {
     uint8  BitMask;
     uint8  Spare[3];
 } FAULT_INJ_FlipSymbolCmd_t;
+typedef struct {
+    CFE_MSG_CommandHeader_t Hdr;
+    uint8 Enabled;   /* 1 = ECC on, 0 = off */
+    uint8 Spare[3];
+} FAULT_INJ_SetEccCmd_t;
 
 /* ---- housekeeping telemetry ---- */
 typedef struct {
@@ -83,6 +97,10 @@ typedef struct {
     uint8  LastOldByte;
     uint8  LastNewByte;
     uint8  Spare2;
+    uint8  EccEnabled;
+    uint8  Spare3[3];
+    uint32 EccCorrected;      /* single-bit hits corrected by ECC */
+    uint32 EccUncorrectable;  /* multi-bit hits detected but not correctable */
 } FAULT_INJ_HkTlm_t;
 
 static struct {
@@ -163,8 +181,22 @@ static int page_prot(uintptr_t addr)
     return prot;
 }
 
+typedef enum { HIT_LANDED = 0, HIT_CORRECTED = 1, HIT_UNCORRECTABLE = 2 } HitResult_t;
+
+/* Apply one radiation hit to a byte, passing it through the simulated ECC.
+ * Returns <0 on failure, otherwise a HitResult_t. */
 static int32 FlipByte(uintptr_t addr, uint8 mask, uint8 *oldv, uint8 *newv)
 {
+    int nbits = __builtin_popcount(mask);
+    FI.Hk.TotalBitsFlipped += nbits;
+    FI.Hk.LastAddress = (uint32)addr;
+    if (FI.Hk.EccEnabled && nbits == 1) {
+        /* corrected on the next read/scrub: software never sees the bad bit */
+        *oldv = *newv = *(volatile uint8 *)addr;
+        FI.Hk.LastOldByte = *oldv; FI.Hk.LastNewByte = *newv;
+        FI.Hk.EccCorrected++;
+        return HIT_CORRECTED;
+    }
     int prot = page_prot(addr);
     if (prot < 0) return -1;
     long      pg   = sysconf(_SC_PAGESIZE);
@@ -175,9 +207,21 @@ static int32 FlipByte(uintptr_t addr, uint8 mask, uint8 *oldv, uint8 *newv)
     *p    = *oldv ^ mask;
     *newv = *p;
     if (!(prot & PROT_WRITE)) mprotect((void *)page, pg, prot);
-    FI.Hk.TotalBitsFlipped += __builtin_popcount(mask);
-    FI.Hk.LastAddress = (uint32)addr; FI.Hk.LastOldByte = *oldv; FI.Hk.LastNewByte = *newv;
-    return 0;
+    FI.Hk.LastOldByte = *oldv; FI.Hk.LastNewByte = *newv;
+    if (FI.Hk.EccEnabled) { FI.Hk.EccUncorrectable++; return HIT_UNCORRECTABLE; }
+    return HIT_LANDED;
+}
+
+/* Report a hit, worded by what the ECC did with it. */
+static void ReportHit(int32 res, const char *how, const char *app, const char *where, unsigned long off, uintptr_t addr, uint8 o, uint8 n, uint8 mask)
+{
+    if (res == HIT_CORRECTED)
+        CFE_EVS_SendEvent(EID_ECC_CORRECTED, CFE_EVS_EventType_INFORMATION, "ECC corrected 1-bit %s hit in %s %s+0x%lx @%lx", how, app, where, off, (unsigned long)addr);
+    else if (res == HIT_UNCORRECTABLE)
+        CFE_EVS_SendEvent(EID_ECC_UNCORRECTABLE, CFE_EVS_EventType_CRITICAL, "ECC UNCORRECTABLE %d-bit %s hit in %s %s+0x%lx @%lx: %02x->%02x",
+                          __builtin_popcount(mask), how, app, where, off, (unsigned long)addr, o, n);
+    else
+        CFE_EVS_SendEvent(EID_FLIP, CFE_EVS_EventType_INFORMATION, "%s hit %s %s+0x%lx @%lx: %02x->%02x", how, app, where, off, (unsigned long)addr, o, n);
 }
 
 static uint32 Rand(void) { FI.Rng ^= FI.Rng << 13; FI.Rng ^= FI.Rng >> 17; FI.Rng ^= FI.Rng << 5; return FI.Rng; }
@@ -207,10 +251,10 @@ static bool FlipAt(const char *app, uint8 region, uint32 offset, uint8 mask, con
     if (FindRegions(app, &r) != 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "%s: app %s not found", how, app); return false; }
     if (r.Size[region] == 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "%s: %s has no %s region", how, app, RegName[region]); return false; }
     uintptr_t addr = r.Addr[region] + (offset % r.Size[region]);
-    if (FlipByte(addr, mask, &o, &n) != 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "%s: cannot write %lx", how, (unsigned long)addr); return false; }
+    int32 res = FlipByte(addr, mask, &o, &n);
+    if (res < 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "%s: cannot write %lx", how, (unsigned long)addr); return false; }
     CopyName(FI.Hk.LastApp, app, sizeof FI.Hk.LastApp); FI.Hk.LastRegion = region;
-    CFE_EVS_SendEvent(EID_FLIP, CFE_EVS_EventType_INFORMATION, "%s hit %s %s+0x%lx @%lx: %02x->%02x",
-                      how, app, RegName[region], (unsigned long)(addr - r.Addr[region]), (unsigned long)addr, o, n);
+    ReportHit(res, how, app, RegName[region], (unsigned long)(addr - r.Addr[region]), addr, o, n, mask);
     return true;
 }
 
@@ -241,10 +285,17 @@ static bool FlipSymbol(const FAULT_INJ_FlipSymbolCmd_t *c)
     if (h) dlclose(h);
     if (!a) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "SYMBOL: %s not found in %s", sym, app); return false; }
     uintptr_t addr = (uintptr_t)a + c->Offset;
-    if (c->BitMask == 0 || FlipByte(addr, c->BitMask, &o, &n) != 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "SYMBOL: cannot flip %s+%u", sym, (unsigned)c->Offset); return false; }
+    int32 res = c->BitMask ? FlipByte(addr, c->BitMask, &o, &n) : -1;
+    if (res < 0) { CFE_EVS_SendEvent(EID_ERR, CFE_EVS_EventType_ERROR, "SYMBOL: cannot flip %s+%u", sym, (unsigned)c->Offset); return false; }
     CopyName(FI.Hk.LastApp, app, sizeof FI.Hk.LastApp); FI.Hk.LastRegion = 0xFF;
-    CFE_EVS_SendEvent(EID_FLIP, CFE_EVS_EventType_INFORMATION, "SYMBOL hit %s %s+%u @%lx: %02x->%02x",
-                      app, sym, (unsigned)c->Offset, (unsigned long)addr, o, n);
+    ReportHit(res, "SYMBOL", app, sym, (unsigned long)c->Offset, addr, o, n, c->BitMask);
+    return true;
+}
+
+static bool SetEcc(const FAULT_INJ_SetEccCmd_t *c)
+{
+    FI.Hk.EccEnabled = c->Enabled ? 1 : 0;
+    CFE_EVS_SendEvent(EID_ECC_MODE, CFE_EVS_EventType_INFORMATION, "ECC %s", FI.Hk.EccEnabled ? "ON: 1-bit hits corrected, multi-bit detected" : "OFF: every hit lands in memory");
     return true;
 }
 
@@ -260,6 +311,7 @@ static void ProcessCommand(const CFE_SB_Buffer_t *buf)
         case FAULT_INJ_FLIP_CC:        want = sizeof(FAULT_INJ_FlipCmd_t); break;
         case FAULT_INJ_FLIP_RANDOM_CC: want = sizeof(FAULT_INJ_FlipRandomCmd_t); break;
         case FAULT_INJ_FLIP_SYMBOL_CC: want = sizeof(FAULT_INJ_FlipSymbolCmd_t); break;
+        case FAULT_INJ_SET_ECC_CC:     want = sizeof(FAULT_INJ_SetEccCmd_t); break;
         default:
             CFE_EVS_SendEvent(EID_CMD_ERR, CFE_EVS_EventType_ERROR, "unknown function code %u", fc);
             FI.Hk.ErrCounter++; SendHk(); return;
@@ -272,12 +324,15 @@ static void ProcessCommand(const CFE_SB_Buffer_t *buf)
         case FAULT_INJ_NOOP_CC:
             CFE_EVS_SendEvent(EID_NOOP, CFE_EVS_EventType_INFORMATION, "No-op: FAULT_INJ ready"); ok = true; break;
         case FAULT_INJ_RESET_CC:
-            memset(&FI.Hk.CmdCounter, 0, sizeof(FI.Hk) - offsetof(FAULT_INJ_HkTlm_t, CmdCounter));
+            { uint8 ecc = FI.Hk.EccEnabled;
+              memset(&FI.Hk.CmdCounter, 0, sizeof(FI.Hk) - offsetof(FAULT_INJ_HkTlm_t, CmdCounter));
+              FI.Hk.EccEnabled = ecc; }
             CFE_EVS_SendEvent(EID_RESET, CFE_EVS_EventType_INFORMATION, "counters reset"); SendHk(); return;
         case FAULT_INJ_QUERY_CC:       ok = Query((const void *)buf); break;
         case FAULT_INJ_FLIP_CC:        ok = Flip((const void *)buf); break;
         case FAULT_INJ_FLIP_RANDOM_CC: ok = FlipRandom((const void *)buf); break;
         case FAULT_INJ_FLIP_SYMBOL_CC: ok = FlipSymbol((const void *)buf); break;
+        case FAULT_INJ_SET_ECC_CC:     ok = SetEcc((const void *)buf); break;
     }
     if (ok) FI.Hk.CmdCounter++; else FI.Hk.ErrCounter++;
     SendHk();
