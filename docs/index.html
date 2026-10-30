@@ -24,9 +24,9 @@
 </head>
 <body>
 <h1>NASA cFS running in the browser</h1>
-<p class="sub">v86 boots a 32-bit Linux VM; cFS runs inside it. Commands and telemetry cross a virtual serial port. Status: <span id="status">booting VM…</span> <span id="age"></span></p>
+<p class="sub">v86 boots a 32-bit Linux flight computer that starts cFS on its own. Commands and telemetry cross a virtual radio link; a hardware watchdog on its own bus reboots the computer if the flight software stops checking in. Status: <span id="status">booting VM…</span> <span id="age"></span></p>
 <div class="row">
-  <button id="b-start" disabled>Start cFS</button>
+  <button id="b-start" disabled>Start flight software</button>
   <button id="b-tlm" disabled>Enable telemetry</button>
   <button id="b-noop" disabled>ES No-op</button>
   <button id="b-restart" disabled>Restart SAMPLE_APP</button>
@@ -40,6 +40,8 @@
   <button id="f-data" class="fi" disabled>8 random data hits</button>
   <button id="f-code" class="fi" disabled>40 random code hits</button>
 </div>
+<p class="sub">Hardware watchdog: <b id="wd-state">waiting for Health &amp; Safety</b> <span id="wd-kick"></span> · resets: <b id="wd-resets">0</b>
+  <button id="wd-jumper" aria-pressed="true">Watchdog: ON</button></p>
 <p class="sub">SAMPLE_APP command counter (from its telemetry): <b id="ctr">–</b> &nbsp; FAULT_INJ bits flipped: <b id="flips">0</b> &nbsp; ECC corrected: <b id="ecc-c">0</b> &nbsp; ECC uncorrectable: <b id="ecc-u">0</b></p>
 <div class="grid">
   <div class="box"><h2>VM console (ttyS0)</h2><pre id="con"></pre></div>
@@ -50,97 +52,195 @@
 <script src="libv86.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-const emu = new V86({
-  wasm_path: "v86.wasm",
-  bios: { url: "bios.bin" },
-  vga_bios: { url: "vgabios.bin" },
-  bzimage: { url: "bzImage" },
-  initrd: { url: "initrd.gz" },
-  cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3",
-  memory_size: 128 * 1024 * 1024,
-  uart1: true, autostart: true,
-  disable_keyboard: true, disable_mouse: true, disable_speaker: true,
-});
+const FSW_BTNS = ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"];
+const setFswButtons = (on) => { for (const id of FSW_BTNS) $(id).disabled = !on; };
+const status = (html) => { $("status").innerHTML = html; };
 
-// console
-let con = "";
-emu.add_listener("serial0-output-byte", (b) => {
+// ---------------------------------------------------------------------------
+// The flight computer: a v86 PC. The disk images are fetched once and kept,
+// so a watchdog power cycle can boot a fresh computer instantly.
+// ---------------------------------------------------------------------------
+let emu = null, files = null;
+let con = "", s1 = "", s2 = "";
+let started = false, operational = false, probing = false, lastTlm = 0;
+
+async function loadFiles() {
+  const get = async (u) => ({ buffer: await (await fetch(u)).arrayBuffer() });
+  const [bios, vga_bios, bzimage, initrd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
+  files = { bios, vga_bios, bzimage, initrd };
+}
+
+function powerOn() {
+  con = ""; s1 = ""; s2 = ""; started = false; operational = false; probing = false;
+  wd.enabled = false; wd.timeoutMs = 0;
+  setFswButtons(false); $("b-start").disabled = true; $("age").textContent = "";
+  status("booting flight computer…");
+  emu = new V86({
+    wasm_path: "v86.wasm", ...files,
+    // fsw=auto: the VM boots straight into cFS, like a real flight computer
+    cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
+    memory_size: 128 * 1024 * 1024,
+    uart1: true,   // ttyS1: radio link to the ground (commands and telemetry)
+    uart2: true,   // ttyS2: onboard bus to the hardware watchdog
+    autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
+  });
+  emu.add_listener("serial0-output-byte", onConsoleByte);
+  emu.add_listener("serial1-output-byte", onRadioByte);
+  emu.add_listener("serial2-output-byte", onWatchdogByte);
+}
+
+async function powerCycle() {
+  const old = emu; emu = null;
+  try { await old.destroy(); } catch (e) { /* already gone */ }
+  powerOn();
+}
+
+const sh = (cmd) => { if (emu) emu.serial0_send(cmd + "\n"); };
+
+// ---------------------------------------------------------------------------
+// Console (ttyS0)
+// ---------------------------------------------------------------------------
+function onConsoleByte(b) {
   con += String.fromCharCode(b);
   if (con.length > 20000) con = con.slice(-15000);
   $("con").textContent = con; $("con").scrollTop = 1e9;
-  if (/VM-READY/.test(con) && $("b-start").disabled && !started) { $("status").textContent = "VM ready"; $("b-start").disabled = false; }
-  if (/FSW-DOWN\r?\n/.test(con.slice(-200)) && started) { started = false; operational = false; probing = false; $("status").innerHTML = '<span class="bad">flight software crashed: complete failure</span>'; $("age").textContent = ""; $("b-start").disabled = false; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"]) $(id).disabled = true; con += "\n"; }
-  if (/FSW-ALIVE\r?\n/.test(con.slice(-200)) && probing) { probing = false; lastTlm = Date.now(); $("status").innerHTML = '<span class="bad">no telemetry, but the process is alive (hung?)</span>'; con += "\n"; }
-  if (/OPERATIONAL/.test(con.slice(-4000)) && started && !operational) { operational = true; lastTlm = Date.now(); $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"]) $(id).disabled = false; send(cmdPacket(0x1880, 6, str("127.0.0.1", 16))); }
-});
-let started = false, operational = false, probing = false, lastTlm = 0;
+  const tail = con.slice(-300);
+  if (/FSW-AUTOSTART/.test(con) && !started) { started = true; status("starting flight software…"); }
+  if (/entering OPERATIONAL/.test(con.slice(-4000)) && started && !operational) {
+    operational = true; lastTlm = Date.now();
+    status('<span class="ok">cFS OPERATIONAL</span>'); setFswButtons(true);
+    send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));   // turn on the downlink
+  }
+  if (/FSW-DOWN\r?\n/.test(tail) && started) {
+    started = false; operational = false; probing = false;
+    const msg = wd.jumper && wd.enabled ? "flight software crashed: waiting for the watchdog" : "flight software crashed: complete failure";
+    status(`<span class="bad">${msg}</span>`); $("age").textContent = "";
+    setFswButtons(false); $("b-start").disabled = false; con += "\n";
+  }
+  if (/FSW-ALIVE\r?\n/.test(tail) && probing) {
+    probing = false; lastTlm = Date.now();
+    status('<span class="bad">no telemetry, but the process is alive (hung?)</span>'); con += "\n";
+  }
+}
+
 // Ground-station style health check: telemetry normally arrives every second
 // (FAULT_INJ housekeeping). If it stops, ask the VM whether cFS is still running.
 setInterval(() => {
-  if (!operational) return;
+  if (!operational || !emu) return;
   const age = (Date.now() - lastTlm) / 1000;
   $("age").textContent = `· last telemetry ${age.toFixed(0)}s ago`;
-  if (age > 6 && !probing) { probing = true; $("status").innerHTML = '<span class="bad">telemetry lost, checking…</span>'; sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'"); }
+  if (age > 6 && !probing) { probing = true; status('<span class="bad">telemetry lost, checking…</span>'); sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'"); }
 }, 1000);
-const sh = (cmd) => emu.serial0_send(cmd + "\n");
 
-// data channel: hex-framed CCSDS packets
-let s1 = ""; const counts = new Map(); const evts = [];
-emu.add_listener("serial1-output-byte", (b) => {
+// ---------------------------------------------------------------------------
+// Radio link (ttyS1): hex-framed CCSDS packets
+// ---------------------------------------------------------------------------
+const counts = new Map(), evts = [];
+const logEvent = (line) => { evts.push(line); $("evt").textContent = evts.slice(-60).join("\n"); $("evt").scrollTop = 1e9; };
+let eccOn = false;
+
+function onRadioByte(b) {
   const c = String.fromCharCode(b);
   if (c !== "\n") { s1 += c; return; }
-  if (s1[0] === "T") {
-    lastTlm = Date.now();
-    if (operational && !probing && /lost|silent|hung/.test($("status").textContent)) $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>';
-    const hex = s1.slice(1); const mid = parseInt(hex.slice(0, 4), 16);
-    counts.set(mid, (counts.get(mid) || 0) + 1);
-    if (mid === 0x0808) {
-      // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
-      const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
-      const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i < bytes.length && bytes[i]; i++) t += String.fromCharCode(bytes[i]); return t; };
-      const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][bytes[38] | (bytes[39] << 8)] || "?";
-      evts.push(`[${cstr(16, 20)}] ${evType}: ${cstr(48, 122)}`); $("evt").textContent = evts.slice(-60).join("\n"); $("evt").scrollTop = 1e9;
-    }
-    if (mid === 0x0883) $("ctr").textContent = parseInt(hex.substr(32, 2), 16);
-    if (mid === 0x08c0) { const b = (i) => parseInt(hex.substr(i * 2, 2), 16); const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
-      $("flips").textContent = u32at(20);
-      if (hex.length >= 128) { eccOn = b(52) === 1; $("f-ecc").textContent = "ECC: " + (eccOn ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccOn)); $("ecc-c").textContent = u32at(56); $("ecc-u").textContent = u32at(60); } }
-    $("tlm").textContent = [...counts].sort((a, b) => a[0] - b[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
-  }
+  if (s1[0] === "T") handleTelemetry(s1.slice(1));
   s1 = "";
-});
+}
+
+function handleTelemetry(hex) {
+  lastTlm = Date.now();
+  if (operational && !probing && /lost|hung/.test($("status").textContent)) status('<span class="ok">cFS OPERATIONAL</span>');
+  const mid = parseInt(hex.slice(0, 4), 16);
+  const b = (i) => parseInt(hex.substr(i * 2, 2), 16);
+  const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
+  counts.set(mid, (counts.get(mid) || 0) + 1);
+  if (mid === 0x0808) {
+    // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
+    const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i * 2 < hex.length && b(i); i++) t += String.fromCharCode(b(i)); return t; };
+    const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][b(38) | (b(39) << 8)] || "?";
+    logEvent(`[${cstr(16, 20)}] ${evType}: ${cstr(48, 122)}`);
+  }
+  if (mid === 0x0883) $("ctr").textContent = b(16);
+  if (mid === 0x08c0) {
+    $("flips").textContent = u32at(20);
+    if (hex.length >= 128) {
+      eccOn = b(52) === 1;
+      $("f-ecc").textContent = "ECC: " + (eccOn ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccOn));
+      $("ecc-c").textContent = u32at(56); $("ecc-u").textContent = u32at(60);
+    }
+  }
+  $("tlm").textContent = [...counts].sort((x, y) => x[0] - y[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
+}
 
 function cmdPacket(mid, fc, payload = new Uint8Array(0)) {
   const p = new Uint8Array(8 + payload.length);
   p[0] = mid >> 8; p[1] = mid & 255; p[2] = 0xc0; p[3] = 0; const len = p.length - 7; p[4] = len >> 8; p[5] = len & 255;
   p[6] = fc; p.set(payload, 8);
-  let x = 0xff; for (const b of p) x ^= b; p[7] = x;
+  let x = 0xff; for (const v of p) x ^= v; p[7] = x;
   return p;
 }
-const str = (s, n) => { const b = new Uint8Array(n); for (let i = 0; i < s.length && i < n; i++) b[i] = s.charCodeAt(i); return b; };
-const send = (p) => { const line = "C" + [...p].map((b) => b.toString(16).padStart(2, "0")).join("") + "\n"; emu.serial_send_bytes(1, new TextEncoder().encode(line)); };
+const str = (t, n) => { const o = new Uint8Array(n); for (let i = 0; i < t.length && i < n; i++) o[i] = t.charCodeAt(i); return o; };
 const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
+const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
+const send = (p) => { if (emu) emu.serial_send_bytes(1, new TextEncoder().encode("C" + [...p].map((v) => v.toString(16).padStart(2, "0")).join("") + "\n")); };
 
-$("b-start").onclick = () => { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; $("status").textContent = "starting cFS…"; sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
+// ---------------------------------------------------------------------------
+// Hardware watchdog chip (ttyS2). cFS Health & Safety arms it ("WS<ms>", "WE")
+// and kicks it ("WK") every cycle while the flight software is healthy. If the
+// kicks stop for longer than the timeout, the chip cuts power and the flight
+// computer cold-boots. The ON/OFF button is a jumper for the before/after demo.
+// ---------------------------------------------------------------------------
+const wd = { jumper: true, enabled: false, timeoutMs: 0, lastKick: 0, resets: 0 };
+
+function onWatchdogByte(byte) {
+  const c = String.fromCharCode(byte);
+  if (c !== "\n") { s2 += c; return; }
+  const line = s2.trim(); s2 = "";
+  if (line.startsWith("WS")) wd.timeoutMs = parseInt(line.slice(2), 10) || 0;
+  else if (line === "WE") { wd.enabled = true; wd.lastKick = Date.now(); }
+  else if (line === "WD") wd.enabled = false;
+  else if (line === "WK") wd.lastKick = Date.now();
+}
+
+setInterval(() => {
+  if (!wd.jumper) { $("wd-state").textContent = "disconnected"; $("wd-kick").textContent = ""; return; }
+  if (!wd.enabled || !wd.timeoutMs) { $("wd-state").textContent = "waiting for Health & Safety"; $("wd-kick").textContent = ""; return; }
+  const since = Date.now() - wd.lastKick;
+  $("wd-state").textContent = since > 2500 ? "no kicks!" : "armed";
+  $("wd-kick").textContent = `· last kick ${(since / 1000).toFixed(1)}s ago (reset at ${(wd.timeoutMs / 1000).toFixed(0)}s)`;
+  if (since > wd.timeoutMs && emu) {
+    wd.enabled = false; wd.resets++; $("wd-resets").textContent = wd.resets;
+    logEvent(`[WATCHDOG] CRIT: no kick for ${(since / 1000).toFixed(1)}s: hardware reset #${wd.resets}, power-cycling the flight computer`);
+    powerCycle();
+  }
+}, 200);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+$("b-start").onclick = () => { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; status("starting flight software…"); sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
 $("b-tlm").onclick = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
 $("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
 $("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
-$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); con = ""; operational = false; probing = false; $("age").textContent = ""; $("status").innerHTML = '<span class="bad">flight software down</span>'; started = false; $("b-start").disabled = false; };
-// ---- FAULT_INJ (commands 0x18C0) ----
-const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
-const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
+$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); };
+$("wd-jumper").onclick = () => {
+  wd.jumper = !wd.jumper; if (wd.jumper) wd.lastKick = Date.now();
+  $("wd-jumper").textContent = "Watchdog: " + (wd.jumper ? "ON" : "OFF"); $("wd-jumper").setAttribute("aria-pressed", String(wd.jumper));
+};
+
+// FAULT_INJ (commands 0x18C0)
 const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
 const fiQuery = (app) => cmdPacket(0x18c0, 2, str(app, 20));
 const fiRandom = (app, region, count, seed) => cmdPacket(0x18c0, 4, cat(str(app, 20), new Uint8Array([REG[region], 0]), u16(count), u32(seed)));
 const fiSymbol = (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20), str(sym, 32), u32(off), new Uint8Array([mask, 0, 0, 0])));
-const tlmOn = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
-$("f-query").onclick = () => { tlmOn(); send(fiQuery("SAMPLE_APP")); };
-$("f-counter").onclick = () => { tlmOn(); send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80)); };
-$("f-counter2").onclick = () => { tlmOn(); send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81)); };
-let eccOn = false;
+$("f-query").onclick = () => send(fiQuery("SAMPLE_APP"));
+$("f-counter").onclick = () => send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80));
+$("f-counter2").onclick = () => send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81));
 $("f-ecc").onclick = () => send(cmdPacket(0x18c0, 6, new Uint8Array([eccOn ? 0 : 1, 0, 0, 0])));
-$("f-data").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "data", 8, 0)); };
-$("f-code").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); };
+$("f-data").onclick = () => send(fiRandom("SAMPLE_APP", "data", 8, 0));
+$("f-code").onclick = () => { send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); };
+
+loadFiles().then(powerOn).catch((e) => status(`<span class="bad">could not load the VM images: ${e.message}</span>`));
 </script>
 </body>
 </html>

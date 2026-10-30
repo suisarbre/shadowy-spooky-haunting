@@ -12,4 +12,10 @@ hostname spacey-sat1
 echo "VM-READY $(cat /proc/uptime)"
 # serial bridge: browser <-> cFS UDP (ttyS1 is the data channel, ttyS0 is the console)
 /bin/serbridge /dev/ttyS1 2>/tmp/serbridge.log &
+# Flight computer mode: boot straight into the flight software (used by the demo page,
+# so a hardware watchdog reset brings cFS back with no one at the keyboard)
+if grep -q 'fsw=auto' /proc/cmdline; then
+  echo "FSW-AUTOSTART"
+  (cd /cfs/cpu1 && ./core-cpu1 2>&1 | tee /tmp/cfs.log | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]|RESET') &
+fi
 exec setsid cttyhack /bin/sh

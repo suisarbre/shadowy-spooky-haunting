@@ -11,7 +11,7 @@ cd docs && python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-The VM boots in about 10 s. Click **Start cFS**; telemetry is enabled automatically once cFS is up. The buttons send real CCSDS commands to cFS. Like a ground station, the page watches telemetry: if nothing arrives for 6 s it checks whether the flight software process is still alive and reports either a crash or a hang. The second row of buttons drives FAULT_INJ: hit SAMPLE_APP's counter and watch it jump in telemetry, or corrupt its code and watch the flight software crash.
+The VM boots in about 10 s. The flight computer boots straight into cFS (about 14 s) and turns on telemetry by itself. The buttons send real CCSDS commands to cFS. Like a ground station, the page watches telemetry: if nothing arrives for 6 s it checks whether the flight software process is still alive and reports either a crash or a hang. The second row of buttons drives FAULT_INJ: hit SAMPLE_APP's counter and watch it jump in telemetry, or corrupt its code and watch the flight software crash.
 
 No special server headers are needed: v86 runs single-threaded, so GitHub Pages works as is.
 
@@ -46,12 +46,34 @@ The crash result is the point of the demo: on Linux, cFS runs every app as a thr
 
 To add it to a cFS tree: copy `apps/fault_inj` into `apps/`, and use the three files in `build/cfs/sample_defs/` (adds `fault_inj` to the cpu1 app list and startup script, and subscribes TO_LAB to `0x08C0`).
 
+## Hardware watchdog
+
+On a real spacecraft the watchdog is a separate chip: the flight software must keep "kicking" it, and if the kicks stop the chip resets the computer. cFS already has this design. Health & Safety arms the watchdog at startup (10 s timeout) and services it every cycle (about once a second) while the system is healthy. On the stock Linux PSP those calls are empty, so `build/cfs/psp/cfe_psp_watchdog.c` sends them to an onboard serial bus instead:
+
+| Line on `/dev/ttyS2` | Meaning |
+|---|---|
+| `WS<ms>` | set timeout |
+| `WE` / `WD` | enable / disable |
+| `WK` | kick |
+
+The page models the chip. If no kick arrives within the timeout it power-cycles the flight computer (the v86 instance is destroyed and a new one boots; v86's own `restart()` does not handle a bzImage boot). The VM's `init` boots straight into cFS when the kernel command line has `fsw=auto`, so the flight software comes back with no one at the keyboard, and cFS logs a power-on reset. The **Watchdog: ON/OFF** button disconnects the chip for the before/after comparison.
+
+Tested in v86 (`test/test-watchdog.mjs`, 9/9 pass):
+
+| Scenario | Result |
+|---|---|
+| Healthy | Health & Safety arms the chip (`WS10000`, `WE`) and kicks about once a second |
+| 40 code hits crash the flight software | Watchdog resets ~11 s later; cFS back ~12 s after that, logging a power-on reset |
+| Flight software hangs (`kill -STOP`) | Same: reset after ~10 s, back on its own |
+| Watchdog disconnected, flight software killed | Stays down |
+
 ## How it fits together
 
 ```
 browser JS  --ttyS1 (hex lines)-->  serbridge  --UDP 1234-->  CI_LAB  --> cFS software bus
 browser JS  <--ttyS1 (hex lines)--  serbridge  <--UDP 2234--  TO_LAB  <-- cFS software bus
 browser JS  <--ttyS0-->  busybox shell (console, start/stop cFS)
+browser JS  <--ttyS2---  cFS Health & Safety -> PSP watchdog calls (hardware watchdog chip)
 ```
 
 - `C<hex>\n` from the page = one command packet; `T<hex>\n` from the VM = one telemetry packet.
