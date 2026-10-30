@@ -5,46 +5,71 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SpaceY cFS in v86</title>
 <style>
-  :root { --bg:#0d1117; --panel:#161b22; --fg:#d6dde6; --dim:#7d8896; --ok:#3fb950; --bad:#f85149; --acc:#58a6ff; color-scheme: dark; }
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#d6dde6; --dim:#7d8896; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; color-scheme: dark; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; padding-block:16px; padding-left:max(16px, env(safe-area-inset-left,0px)); padding-right:max(16px, env(safe-area-inset-right,0px)); }
   h1 { font-size:18px; margin:0 0 4px; }
+  h2.sec { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:16px 0 6px; }
   p.sub { color:var(--dim); margin:0 0 12px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-  button { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+  button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--acc); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
   button:disabled { opacity:.5; cursor:default; }
-  label { color:var(--dim); align-self:center; }
-  select, input { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:5px 6px; font:inherit; min-width:0; }
-  #st-off { width:7.5em; } #st-file { max-width:100%; }
   button[aria-pressed="true"] { border-color:var(--ok); color:var(--ok); }
+  label { color:var(--dim); }
+  select, input { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; font:inherit; min-width:0; }
+  #st-off { width:7.5em; } #st-file { max-width:100%; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:10px; margin-bottom:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; min-width:0; font-size:13px; }
+  .card.target { border-color:var(--acc); }
+  .card h3 { margin:0 0 4px; font-size:14px; display:flex; justify-content:space-between; gap:8px; }
+  .card .k { color:var(--dim); }
+  .card div { font-variant-numeric:tabular-nums; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; }
-  .box { background:var(--panel); border:1px solid #30363d; border-radius:8px; padding:10px; min-width:0; }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; min-width:0; }
   .box h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
-  pre { margin:0; height:320px; overflow:auto; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-all; }
+  pre { margin:0; height:300px; overflow:auto; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-all; }
   #status { font-weight:600; }
-  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  #voter[hidden] { display:none; }
 </style>
 </head>
 <body>
 <h1>NASA cFS running in the browser</h1>
-<p class="sub">v86 boots a 32-bit Linux flight computer that starts cFS on its own. Commands and telemetry cross a virtual radio link; a hardware watchdog on its own bus reboots the computer if the flight software stops checking in. Status: <span id="status">booting VM…</span> <span id="age"></span></p>
+<p class="sub">Each flight computer is a v86 PC running 32-bit Linux and NASA cFS, with its own boot storage and hardware watchdog. In TMR mode three computers run side by side and a voter outside them masks a computer that disagrees, then resyncs it from a healthy one.</p>
+<p>Status: <span id="status">loading…</span></p>
+
 <div class="row">
-  <button id="b-start" disabled>Start flight software</button>
-  <button id="b-tlm" disabled>Enable telemetry</button>
+  <label for="mode">Configuration</label>
+  <select id="mode">
+    <option value="single">1 computer: ECC + watchdog + reboot</option>
+    <option value="tmr">3 computers: TMR with voter</option>
+  </select>
+  <button id="wd-jumper" aria-pressed="true">Watchdogs: ON</button>
+  <button id="f-ecc" disabled aria-pressed="false">ECC: OFF</button>
+</div>
+
+<div class="cards" id="cards"></div>
+<p class="sub" id="voter" hidden></p>
+
+<h2 class="sec">Ground commands (sent to every computer)</h2>
+<div class="row">
   <button id="b-noop" disabled>ES No-op</button>
   <button id="b-restart" disabled>Restart SAMPLE_APP</button>
+  <button id="b-sample-noop" disabled>SAMPLE_APP No-op</button>
+</div>
+
+<h2 class="sec">Radiation and faults: target <select id="target" aria-label="Target computer"></select></h2>
+<div class="row">
+  <button id="f-query" disabled>Map SAMPLE_APP memory</button>
+  <button id="f-counter" disabled>Hit SAMPLE_APP counter (1 bit)</button>
+  <button id="f-counter2" disabled>Hit SAMPLE_APP counter (2 bits)</button>
+  <button id="f-data" disabled>8 random data hits</button>
+  <button id="f-code" disabled>40 random code hits</button>
   <button id="b-kill" disabled>Kill flight software</button>
+  <button id="b-start" disabled>Start flight software</button>
 </div>
-<div class="row" aria-label="Fault injection">
-  <button id="f-query" class="fi" disabled>Map SAMPLE_APP memory</button>
-  <button id="f-ecc" class="fi" disabled aria-pressed="false">ECC: OFF</button>
-  <button id="f-counter" class="fi" disabled>Hit SAMPLE_APP counter (1 bit)</button>
-  <button id="f-counter2" class="fi" disabled>Hit SAMPLE_APP counter (2 bits)</button>
-  <button id="f-data" class="fi" disabled>8 random data hits</button>
-  <button id="f-code" class="fi" disabled>40 random code hits</button>
-</div>
-<p class="sub">Hardware watchdog: <b id="wd-state">waiting for Health &amp; Safety</b> <span id="wd-kick"></span> · resets: <b id="wd-resets">0</b>
-  <button id="wd-jumper" aria-pressed="true">Watchdog: ON</button></p>
 <div class="row" aria-label="Boot storage">
   <label for="st-file">Storage file</label>
   <select id="st-file" disabled><option>loading…</option></select>
@@ -56,56 +81,43 @@
   <button id="st-restore" disabled>Restore storage</button>
   <button id="st-cycle" disabled>Power cycle</button>
 </div>
-<p class="sub">Boot storage: <b id="st-diff">0</b> bits differ from the launch image · boots: <b id="boots">0</b> · failed boots in a row: <b id="fails">0</b></p>
-<p class="sub">SAMPLE_APP command counter (from its telemetry): <b id="ctr">–</b> &nbsp; FAULT_INJ bits flipped: <b id="flips">0</b> &nbsp; ECC corrected: <b id="ecc-c">0</b> &nbsp; ECC uncorrectable: <b id="ecc-u">0</b></p>
+
 <div class="grid">
-  <div class="box"><h2>VM console (ttyS0)</h2><pre id="con"></pre></div>
-  <div class="box"><h2>cFS events (from telemetry)</h2><pre id="evt"></pre></div>
-  <div class="box"><h2>Telemetry packets by message ID</h2><pre id="tlm"></pre></div>
+  <div class="box"><h2>Console of <span class="tname">A</span> (ttyS0)</h2><pre id="con"></pre></div>
+  <div class="box"><h2>Events: <span class="tname">A</span> + ground</h2><pre id="evt"></pre></div>
+  <div class="box"><h2>Telemetry of <span class="tname">A</span> by message ID</h2><pre id="tlm"></pre></div>
 </div>
 
-<script src="libv86.js?v=2026103003"></script>
+<script src="libv86.js?v=2026103004"></script>
 <script>
+"use strict";
 const $ = (id) => document.getElementById(id);
-const FSW_BTNS = ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-counter2","f-data","f-code","f-ecc"];
-const setFswButtons = (on) => { for (const id of FSW_BTNS) $(id).disabled = !on; };
-const status = (html) => { $("status").innerHTML = html; };
-
-// ---------------------------------------------------------------------------
-// The flight computer: a v86 PC. The disk images are fetched once and kept,
-// so a watchdog power cycle can boot a fresh computer instantly.
-// ---------------------------------------------------------------------------
 // Bump BUILD whenever the VM images change, so browsers never mix a cached old
 // image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
-const BUILD = "2026103003";
-let emu = null, files = null, bootTimer = null;
-const BOOT_WINDOW_MS = 30000;   // the watchdog runs from power-on; flight software must check in within this
-let boots = 0, failedStreak = 0, reachedOperational = false, autostartSeen = false;
-let con = "", s1 = "", s2 = "";
-let started = false, operational = false, probing = false, lastTlm = 0;
+const BUILD = "2026103004";
+const BOOT_WINDOW_MS = 30000;   // watchdogs run from power-on; flight software must check in within this
+const SILENCE_MS = 6000;        // telemetry gap that counts as "computer down"
+const DISAGREE_MS = 12000;      // how long a computer may disagree before the voter acts (HK reports are a few s apart)
+const RESYNC_AFTER_DOWN_MS = 2000; // after telemetry loss, so the voter resyncs before the 10 s watchdog would reboot
+const NAMES = ["A", "B", "C"];
 
 // ---------------------------------------------------------------------------
-// Boot storage ("flash"). The kernel and the root filesystem live here, and
-// every power-on boots from whatever is in storage now. Radiation can flip
-// bits here too: the running system is unaffected (it already sits in RAM),
-// but the damage waits for the next boot. The filesystem is kept uncompressed
-// so a hit damages one file instead of breaking the whole archive.
+// Assets shared by every computer: firmware plus the launch image of the boot
+// storage (kernel + uncompressed root filesystem). Each computer gets its own
+// copy of the storage, which radiation can then damage independently.
 // ---------------------------------------------------------------------------
-const storage = { kernel: null, fs: null, origKernel: null, origFs: null, files: [], diffs: new Map() };
+const assets = { bios: null, vga: null, kernel: null, fs: null, files: [] };
 
-async function loadFiles() {
+async function loadAssets() {
   const get = async (u) => { const r = await fetch(`${u}?v=${BUILD}`); if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return r; };
-  const [bios, vga_bios, bz, rd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
-  const fs = new Uint8Array(await new Response(rd.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-  storage.kernel = new Uint8Array(await bz.arrayBuffer());
-  storage.fs = fs;
-  storage.origKernel = storage.kernel.slice(); storage.origFs = fs.slice();
-  storage.files = parseCpio(fs);
-  files = { bios: { buffer: await bios.arrayBuffer() }, vga_bios: { buffer: await vga_bios.arrayBuffer() } };
-  const opts = [`<option value="kernel">kernel (bzImage, ${storage.kernel.length} bytes)</option>`]
-    .concat(storage.files.map((f) => `<option value="${f.name}">${f.name} (${f.size} bytes)</option>`));
-  $("st-file").innerHTML = opts.join(""); $("st-file").value = "cfs/cpu1/core-cpu1";
-  for (const id of ["st-file", "st-hit", "st-restore", "st-cycle"]) $(id).disabled = false;
+  const [bios, vga, bz, rd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
+  assets.bios = await bios.arrayBuffer(); assets.vga = await vga.arrayBuffer();
+  assets.kernel = new Uint8Array(await bz.arrayBuffer());
+  assets.fs = new Uint8Array(await new Response(rd.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  assets.files = parseCpio(assets.fs);
+  $("st-file").innerHTML = [`<option value="kernel">kernel (bzImage, ${assets.kernel.length} bytes)</option>`]
+    .concat(assets.files.map((f) => `<option value="${f.name}">${f.name} (${f.size} bytes)</option>`)).join("");
+  $("st-file").value = "cfs/cpu1/core-cpu1";
 }
 
 // newc cpio: 110-byte ASCII header, name, data; name and data padded to 4 bytes
@@ -123,148 +135,15 @@ function parseCpio(u8) {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function hitStorage(target, offset, bit) {
-  let area, base, size, label;
-  if (target === "kernel") { area = storage.kernel; base = 0; size = area.length; label = "kernel"; }
-  else { const f = storage.files.find((x) => x.name === target); if (!f) return; area = storage.fs; base = f.dataOff; size = f.size; label = f.name; }
-  const rel = ((offset % size) + size) % size, abs = base + rel, mask = 1 << bit;
-  const before = area[abs]; area[abs] ^= mask;
-  const key = (area === storage.kernel ? "k" : "f") + abs;
-  const x = (storage.diffs.get(key) || 0) ^ mask;
-  if (x) storage.diffs.set(key, x); else storage.diffs.delete(key);
-  updateStorageView();
-  logEvent(`[STORAGE] hit ${label}+0x${rel.toString(16)} bit ${bit}: ${before.toString(16).padStart(2, "0")}->${area[abs].toString(16).padStart(2, "0")} (takes effect at the next boot)`);
-}
-
-function restoreStorage() {
-  storage.kernel = storage.origKernel.slice(); storage.fs = storage.origFs.slice(); storage.diffs.clear();
-  updateStorageView(); logEvent("[STORAGE] restored from the launch image (ground re-upload)");
-}
-
-function updateStorageView() {
-  let bits = 0; for (const v of storage.diffs.values()) { let n = v; while (n) { bits += n & 1; n >>= 1; } }
-  $("st-diff").textContent = bits;
-}
-
-function powerOn() {
-  con = ""; s1 = ""; s2 = ""; started = false; operational = false; probing = false;
-  clearTimeout(bootTimer); bootTimer = null;
-  // Like real watchdog chips, ours is running from the moment power comes on.
-  // Health & Safety tightens the timeout once the flight software is up.
-  wd.enabled = wd.jumper; wd.timeoutMs = BOOT_WINDOW_MS; wd.lastKick = Date.now(); wd.byHs = false;
-  boots++; reachedOperational = false; autostartSeen = false; $("boots").textContent = boots;
-  setFswButtons(false); $("b-start").disabled = true; $("age").textContent = "";
-  status(failedStreak >= 2 ? `<span class="bad">BOOT LOOP: boot #${boots}, ${failedStreak} failed in a row</span>` : `booting flight computer (boot #${boots})…`);
-  emu = new V86({
-    wasm_path: `v86.wasm?v=${BUILD}`, ...files,
-    // boot from storage as it is right now, including any radiation damage
-    bzimage: { buffer: storage.kernel.slice().buffer },
-    initrd: { buffer: storage.fs.slice().buffer },
-    // fsw=auto: the VM boots straight into cFS, like a real flight computer
-    cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
-    memory_size: 128 * 1024 * 1024,
-    uart1: true,   // ttyS1: radio link to the ground (commands and telemetry)
-    uart2: true,   // ttyS2: onboard bus to the hardware watchdog
-    autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
-  });
-  emu.add_listener("serial0-output-byte", onConsoleByte);
-  emu.add_listener("serial1-output-byte", onRadioByte);
-  emu.add_listener("serial2-output-byte", onWatchdogByte);
-}
-
-async function powerCycle() {
-  const old = emu; emu = null;
-  try { await old.destroy(); } catch (e) { /* already gone */ }
-  powerOn();
-}
-
-const sh = (cmd) => { if (emu) emu.serial0_send(cmd + "\n"); };
+// ---------------------------------------------------------------------------
+// Event log: ground/voter entries plus each computer's own cFS events
+// ---------------------------------------------------------------------------
+const groundLog = [];
+function logGround(line) { groundLog.push({ t: Date.now(), line }); renderEvents(); }
 
 // ---------------------------------------------------------------------------
-// Console (ttyS0)
+// CCSDS command packets (little-endian payloads)
 // ---------------------------------------------------------------------------
-function onConsoleByte(b) {
-  con += String.fromCharCode(b);
-  if (con.length > 20000) con = con.slice(-15000);
-  $("con").textContent = con; $("con").scrollTop = 1e9;
-  const tail = con.slice(-300);
-  if (!autostartSeen && /FSW-AUTOSTART/.test(con)) { autostartSeen = true; started = true; status("starting flight software…"); }
-  // Fallback: an image without autostart boots to a plain shell. Start cFS from here instead.
-  if (/VM-READY/.test(con) && !started && !autostartSeen && !bootTimer) {
-    bootTimer = setTimeout(() => { if (!started && !autostartSeen && emu) startFsw(); }, 4000);
-  }
-  if (/entering OPERATIONAL/.test(con.slice(-4000)) && started && !operational) {
-    operational = true; lastTlm = Date.now(); reachedOperational = true; failedStreak = 0; $("fails").textContent = 0;
-    status('<span class="ok">cFS OPERATIONAL</span>'); setFswButtons(true);
-    send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));   // turn on the downlink
-  }
-  if (/FSW-DOWN\r?\n/.test(tail) && started) {
-    started = false; operational = false; probing = false;
-    const msg = wd.jumper && wd.enabled ? "flight software crashed: waiting for the watchdog" : "flight software crashed: complete failure";
-    status(`<span class="bad">${msg}</span>`); $("age").textContent = "";
-    setFswButtons(false); $("b-start").disabled = false; con += "\n";
-  }
-  const exit = tail.match(/FSW-EXIT (\d+)/);
-  if (exit && started && !/exit-seen/.test(con.slice(-20))) {
-    started = false; operational = false; probing = false; setFswButtons(false); $("age").textContent = "";
-    const why = /exec format|not found|can't execute|syntax error/i.test(con.slice(-1500)) ? "could not start (corrupted file?)" : `exited with code ${exit[1]}`;
-    status(`<span class="bad">flight software ${why}${wd.jumper ? ": waiting for the watchdog" : ""}</span>`); con += "\nexit-seen\n";
-  }
-  if (/Kernel panic/.test(tail) && !/panic-seen/.test(con.slice(-20))) { status('<span class="bad">kernel panic: the flight computer cannot boot</span>'); con += "\npanic-seen\n"; }
-  if (/FSW-ALIVE\r?\n/.test(tail) && probing) {
-    probing = false; lastTlm = Date.now();
-    status('<span class="bad">no telemetry, but the process is alive (hung?)</span>'); con += "\n";
-  }
-}
-
-// Ground-station style health check: telemetry normally arrives every second
-// (FAULT_INJ housekeeping). If it stops, ask the VM whether cFS is still running.
-setInterval(() => {
-  if (!operational || !emu) return;
-  const age = (Date.now() - lastTlm) / 1000;
-  $("age").textContent = `· last telemetry ${age.toFixed(0)}s ago`;
-  if (age > 6 && !probing) { probing = true; status('<span class="bad">telemetry lost, checking…</span>'); sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'"); }
-}, 1000);
-
-// ---------------------------------------------------------------------------
-// Radio link (ttyS1): hex-framed CCSDS packets
-// ---------------------------------------------------------------------------
-const counts = new Map(), evts = [];
-const logEvent = (line) => { evts.push(line); $("evt").textContent = evts.slice(-60).join("\n"); $("evt").scrollTop = 1e9; };
-let eccOn = false;
-
-function onRadioByte(b) {
-  const c = String.fromCharCode(b);
-  if (c !== "\n") { s1 += c; return; }
-  if (s1[0] === "T") handleTelemetry(s1.slice(1));
-  s1 = "";
-}
-
-function handleTelemetry(hex) {
-  lastTlm = Date.now();
-  if (operational && !probing && /lost|hung/.test($("status").textContent)) status('<span class="ok">cFS OPERATIONAL</span>');
-  const mid = parseInt(hex.slice(0, 4), 16);
-  const b = (i) => parseInt(hex.substr(i * 2, 2), 16);
-  const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
-  counts.set(mid, (counts.get(mid) || 0) + 1);
-  if (mid === 0x0808) {
-    // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
-    const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i * 2 < hex.length && b(i); i++) t += String.fromCharCode(b(i)); return t; };
-    const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][b(38) | (b(39) << 8)] || "?";
-    logEvent(`[${cstr(16, 20)}] ${evType}: ${cstr(48, 122)}`);
-  }
-  if (mid === 0x0883) $("ctr").textContent = b(16);
-  if (mid === 0x08c0) {
-    $("flips").textContent = u32at(20);
-    if (hex.length >= 128) {
-      eccOn = b(52) === 1;
-      $("f-ecc").textContent = "ECC: " + (eccOn ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccOn));
-      $("ecc-c").textContent = u32at(56); $("ecc-u").textContent = u32at(60);
-    }
-  }
-  $("tlm").textContent = [...counts].sort((x, y) => x[0] - y[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
-}
-
 function cmdPacket(mid, fc, payload = new Uint8Array(0)) {
   const p = new Uint8Array(8 + payload.length);
   p[0] = mid >> 8; p[1] = mid & 255; p[2] = 0xc0; p[3] = 0; const len = p.length - 7; p[4] = len >> 8; p[5] = len & 255;
@@ -276,71 +155,358 @@ const str = (t, n) => { const o = new Uint8Array(n); for (let i = 0; i < t.lengt
 const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
 const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
 const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
-const send = (p) => { if (emu) emu.serial_send_bytes(1, new TextEncoder().encode("C" + [...p].map((v) => v.toString(16).padStart(2, "0")).join("") + "\n")); };
+const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
+const CMD = {
+  toEnable: () => cmdPacket(0x1880, 6, str("127.0.0.1", 16)),
+  esNoop: () => cmdPacket(0x1806, 0),
+  restartSample: () => cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)),
+  sampleNoop: () => cmdPacket(0x1882, 0),
+  fiQuery: (app) => cmdPacket(0x18c0, 2, str(app, 20)),
+  fiRandom: (app, region, count, seed) => cmdPacket(0x18c0, 4, cat(str(app, 20), new Uint8Array([REG[region], 0]), u16(count), u32(seed))),
+  fiSymbol: (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20), str(sym, 32), u32(off), new Uint8Array([mask, 0, 0, 0]))),
+  setEcc: (on) => cmdPacket(0x18c0, 6, new Uint8Array([on ? 1 : 0, 0, 0, 0])),
+};
 
 // ---------------------------------------------------------------------------
-// Hardware watchdog chip (ttyS2). cFS Health & Safety arms it ("WS<ms>", "WE")
-// and kicks it ("WK") every cycle while the flight software is healthy. If the
-// kicks stop for longer than the timeout, the chip cuts power and the flight
-// computer cold-boots. The ON/OFF button is a jumper for the before/after demo.
+// One flight computer: a v86 PC with three serial lines
+//   ttyS0 console, ttyS1 radio link (hex-framed CCSDS), ttyS2 bus to its watchdog chip
 // ---------------------------------------------------------------------------
-const wd = { jumper: true, enabled: false, timeoutMs: 0, lastKick: 0, resets: 0, byHs: false };
+let watchdogsOn = true;
 
-function onWatchdogByte(byte) {
-  const c = String.fromCharCode(byte);
-  if (c !== "\n") { s2 += c; return; }
-  const line = s2.trim(); s2 = "";
-  if (line.startsWith("WS")) wd.timeoutMs = parseInt(line.slice(2), 10) || 0;
-  else if (line === "WE") { wd.enabled = wd.jumper; wd.byHs = true; wd.lastKick = Date.now(); }
-  else if (line === "WD") wd.enabled = false;
-  else if (line === "WK") wd.lastKick = Date.now();
+class FlightComputer {
+  constructor(name) {
+    this.name = name;
+    this.kernel = assets.kernel.slice(); this.fs = assets.fs.slice(); this.diffs = new Map();
+    this.boots = 0; this.failedStreak = 0; this.wdResets = 0; this.resyncs = 0;
+    this.events = []; this.tlmCounts = new Map();
+    this.v = { ctr: null, flips: 0, ecc: false, eccC: 0, eccU: 0 };
+    this.emu = null; this.disagreeSince = 0; this.downSince = 0; this.busy = false;
+    this.powerOn();
+  }
+
+  // ---- power ----
+  powerOn() {
+    Object.assign(this, { con: "", s1: "", s2: "", started: false, operational: false, probing: false, lastTlm: 0,
+      reachedOperational: false, autostartSeen: false, bootTimer: null, exitSeen: false, panicSeen: false });
+    // Like real watchdog chips, this one runs from the moment power comes on.
+    this.wd = { enabled: watchdogsOn, timeoutMs: BOOT_WINDOW_MS, lastKick: Date.now(), byHs: false };
+    this.boots++;
+    this.setStatus(this.failedStreak >= 2 ? `<span class="bad">BOOT LOOP (${this.failedStreak} failed)</span>` : `booting (boot #${this.boots})…`);
+    this.emu = new V86({
+      wasm_path: `v86.wasm?v=${BUILD}`,
+      bios: { buffer: assets.bios.slice(0) }, vga_bios: { buffer: assets.vga.slice(0) },
+      bzimage: { buffer: this.kernel.slice().buffer },   // boot from storage as it is now, damage included
+      initrd: { buffer: this.fs.slice().buffer },
+      cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
+      memory_size: 128 * 1024 * 1024,
+      uart1: true, uart2: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
+    });
+    this.emu.add_listener("serial0-output-byte", (b) => this.onConsole(b));
+    this.emu.add_listener("serial1-output-byte", (b) => this.onRadio(b));
+    this.emu.add_listener("serial2-output-byte", (b) => this.onWatchdogBus(b));
+    render();
+  }
+  async powerCycle() {
+    const old = this.emu; this.emu = null; clearTimeout(this.bootTimer);
+    try { await old.destroy(); } catch (e) { /* already gone */ }
+    this.powerOn();
+  }
+  async shutdown() { const old = this.emu; this.emu = null; clearTimeout(this.bootTimer); try { await old.destroy(); } catch (e) {} }
+
+  sh(cmd) { if (this.emu) this.emu.serial0_send(cmd + "\n"); }
+  send(p) { if (this.emu) this.emu.serial_send_bytes(1, new TextEncoder().encode("C" + [...p].map((v) => v.toString(16).padStart(2, "0")).join("") + "\n")); }
+  startFsw() {
+    this.con = ""; this.started = true; this.operational = false; this.probing = false; this.exitSeen = false;
+    this.setStatus("starting flight software…");
+    this.sh("cd /cfs/cpu1 && { ./core-cpu1 2>&1; echo \"FSW-EXI\"\"T $?\"; } | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]|FSW-EXI[T]|Could not loa[d]' &");
+  }
+  setStatus(html) { this.statusHtml = html; render(); }
+  log(line) { this.events.push({ t: Date.now(), line: `[${this.name}] ${line}` }); if (this.events.length > 300) this.events.splice(0, 100); if (this === target()) renderEvents(); }
+
+  // ---- console (ttyS0) ----
+  onConsole(byte) {
+    this.con += String.fromCharCode(byte);
+    if (this.con.length > 20000) this.con = this.con.slice(-15000);
+    if (this === target()) { $("con").textContent = this.con; $("con").scrollTop = 1e9; }
+    const tail = this.con.slice(-300);
+    if (!this.autostartSeen && /FSW-AUTOSTART/.test(tail)) { this.autostartSeen = true; this.started = true; this.setStatus("starting flight software…"); }
+    if (/VM-READY/.test(tail) && !this.started && !this.autostartSeen && !this.bootTimer) {
+      // an image without autostart boots to a plain shell: start cFS from here instead
+      this.bootTimer = setTimeout(() => { if (!this.started && !this.autostartSeen && this.emu) this.startFsw(); }, 4000);
+    }
+    if (/entering OPERATIONAL/.test(tail) && this.started && !this.operational) {
+      this.operational = true; this.reachedOperational = true; this.failedStreak = 0; this.lastTlm = Date.now();
+      this.setStatus('<span class="ok">OPERATIONAL</span>');
+      this.send(CMD.toEnable());   // turn on the downlink
+      if (mode === "tmr") this.send(CMD.setEcc(eccWanted));
+    }
+    const exit = tail.match(/FSW-EXIT (\d+)/);
+    if (exit && !this.exitSeen) {
+      this.exitSeen = true; this.started = false; this.operational = false; this.probing = false;
+      const why = /exec format|not found|can't execute|syntax error/i.test(this.con.slice(-1500)) ? "could not start (corrupted file?)" : `exited (code ${exit[1]})`;
+      this.setStatus(`<span class="bad">flight software ${why}</span>`);
+    }
+    if (/Kernel panic/.test(tail) && !this.panicSeen) { this.panicSeen = true; this.setStatus('<span class="bad">kernel panic</span>'); }
+    if (/FSW-DOWN\r?\n/.test(tail) && this.probing) {
+      this.probing = false; this.started = false; this.operational = false;
+      this.setStatus('<span class="bad">flight software crashed</span>'); this.con += "\n";
+    }
+    if (/FSW-ALIVE\r?\n/.test(tail) && this.probing) {
+      this.probing = false; this.lastTlm = Date.now();
+      this.setStatus('<span class="bad">silent but alive (hung?)</span>'); this.con += "\n";
+    }
+  }
+
+  // ---- radio link (ttyS1) ----
+  onRadio(byte) {
+    const c = String.fromCharCode(byte);
+    if (c !== "\n") { this.s1 += c; return; }
+    if (this.s1[0] === "T") this.onTelemetry(this.s1.slice(1));
+    this.s1 = "";
+  }
+  onTelemetry(hex) {
+    this.lastTlm = Date.now();
+    if (this.operational && !this.probing && /hung/.test(this.statusHtml)) this.setStatus('<span class="ok">OPERATIONAL</span>');
+    const mid = parseInt(hex.slice(0, 4), 16);
+    const b = (i) => parseInt(hex.substr(i * 2, 2), 16);
+    const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
+    this.tlmCounts.set(mid, (this.tlmCounts.get(mid) || 0) + 1);
+    if (mid === 0x0808) {
+      // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
+      const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i * 2 < hex.length && b(i); i++) t += String.fromCharCode(b(i)); return t; };
+      const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][b(38) | (b(39) << 8)] || "?";
+      this.log(`${cstr(16, 20)} ${evType}: ${cstr(48, 122)}`);
+    }
+    if (mid === 0x0883) this.v.ctr = b(16);
+    if (mid === 0x08c0) {
+      this.v.flips = u32at(20);
+      if (hex.length >= 128) { this.v.ecc = b(52) === 1; this.v.eccC = u32at(56); this.v.eccU = u32at(60); }
+    }
+    if (this === target()) renderTelemetry();
+    renderSoon();
+  }
+
+  // ---- watchdog chip (ttyS2) ----
+  // Health & Safety arms it ("WS<ms>", "WE") and kicks it ("WK") every cycle while healthy.
+  onWatchdogBus(byte) {
+    const c = String.fromCharCode(byte);
+    if (c !== "\n") { this.s2 += c; return; }
+    const line = this.s2.trim(); this.s2 = "";
+    if (line.startsWith("WS")) this.wd.timeoutMs = parseInt(line.slice(2), 10) || 0;
+    else if (line === "WE") { this.wd.enabled = watchdogsOn; this.wd.byHs = true; this.wd.lastKick = Date.now(); }
+    else if (line === "WD") this.wd.enabled = false;
+    else if (line === "WK") this.wd.lastKick = Date.now();
+  }
+
+  // ---- once a second: watchdog expiry and ground-station silence check ----
+  tick() {
+    if (!this.emu || this.busy) return;
+    const now = Date.now();
+    if (this.wd.enabled && this.wd.timeoutMs && now - this.wd.lastKick > this.wd.timeoutMs) {
+      this.wd.enabled = false; this.wdResets++;
+      if (!this.reachedOperational) this.failedStreak++;
+      this.log(`WATCHDOG CRIT: no kick for ${((now - this.wd.lastKick) / 1000).toFixed(1)}s: hardware reset, power-cycling`);
+      this.powerCycle(); return;
+    }
+    if (this.operational && now - this.lastTlm > SILENCE_MS && !this.probing) {
+      this.probing = true; this.setStatus('<span class="bad">telemetry lost, checking…</span>');
+      this.sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'");
+    }
+  }
+
+  healthy(now) { return !!this.emu && !this.busy && this.operational && now - this.lastTlm < SILENCE_MS; }
+
+  // ---- TMR resync: copy the whole running state of a healthy computer into this one ----
+  async resyncFrom(src) {
+    if (!this.emu || !src.emu || this.busy || src.busy) return false;
+    this.busy = true; src.busy = true;
+    try {
+      const t0 = performance.now();
+      const state = await src.emu.save_state();
+      await this.emu.restore_state(state);
+      const ms = Math.round(performance.now() - t0);
+      Object.assign(this, { con: `(state copied from ${src.name})\n`, s1: "", s2: "", started: true, operational: true, probing: false,
+        reachedOperational: true, autostartSeen: true, exitSeen: false, panicSeen: false, failedStreak: 0, lastTlm: Date.now(),
+        disagreeSince: 0, downSince: 0 });
+      this.wd = { ...src.wd, lastKick: Date.now(), enabled: watchdogsOn && src.wd.enabled };
+      this.v = { ...src.v }; this.resyncs++;
+      this.setStatus(`<span class="ok">OPERATIONAL (resynced from ${src.name})</span>`);
+      return ms;
+    } catch (e) {
+      this.log(`resync from ${src.name} failed: ${e.message}`); return false;
+    } finally { this.busy = false; src.busy = false; }
+  }
+
+  // ---- boot storage hits ----
+  hitStorage(name, offset, bit) {
+    let area, base, size;
+    if (name === "kernel") { area = this.kernel; base = 0; size = area.length; }
+    else { const f = assets.files.find((x) => x.name === name); if (!f) return; area = this.fs; base = f.dataOff; size = f.size; }
+    const rel = ((offset % size) + size) % size, abs = base + rel, mask = 1 << bit;
+    const before = area[abs]; area[abs] ^= mask;
+    const key = (area === this.kernel ? "k" : "f") + abs;
+    const x = (this.diffs.get(key) || 0) ^ mask;
+    if (x) this.diffs.set(key, x); else this.diffs.delete(key);
+    this.log(`STORAGE hit ${name}+0x${rel.toString(16)} bit ${bit}: ${before.toString(16).padStart(2, "0")}->${area[abs].toString(16).padStart(2, "0")} (takes effect at the next boot)`);
+    render();
+  }
+  restoreStorage() { this.kernel = assets.kernel.slice(); this.fs = assets.fs.slice(); this.diffs.clear(); this.log("STORAGE restored from the launch image (ground re-upload)"); render(); }
+  diffBits() { let n = 0; for (const v of this.diffs.values()) for (let x = v; x; x >>= 1) n += x & 1; return n; }
 }
 
-setInterval(() => {
-  if (!wd.jumper) { $("wd-state").textContent = "disconnected"; $("wd-kick").textContent = ""; return; }
-  if (!wd.enabled || !wd.timeoutMs) { $("wd-state").textContent = "off"; $("wd-kick").textContent = ""; return; }
-  const since = Date.now() - wd.lastKick;
-  $("wd-state").textContent = !wd.byHs ? "boot window" : since > 2500 ? "no kicks!" : "armed by Health & Safety";
-  $("wd-kick").textContent = `· last kick ${(since / 1000).toFixed(1)}s ago (reset at ${(wd.timeoutMs / 1000).toFixed(0)}s)`;
-  if (since > wd.timeoutMs && emu) {
-    wd.enabled = false; wd.resets++; $("wd-resets").textContent = wd.resets;
-    if (!reachedOperational) { failedStreak++; $("fails").textContent = failedStreak; }
-    logEvent(`[WATCHDOG] CRIT: no kick for ${(since / 1000).toFixed(1)}s: hardware reset #${wd.resets}, power-cycling the flight computer`);
-    powerCycle();
+// ---------------------------------------------------------------------------
+// Configuration: one computer, or three under a voter
+// ---------------------------------------------------------------------------
+let mode = "single", computers = [], eccWanted = false;
+const voter = { masked: 0, resyncs: 0, last: "", voted: null, agree: 0 };
+const target = () => computers[Math.min(+$("target").value || 0, computers.length - 1)];
+const fleet = () => computers.filter((c) => c.emu);
+
+async function configure(newMode) {
+  mode = newMode;
+  const old = computers; computers = [];
+  await Promise.all(old.map((c) => c.shutdown()));
+  const n = mode === "tmr" ? 3 : 1;
+  $("target").innerHTML = NAMES.slice(0, n).map((x, i) => `<option value="${i}">${x}</option>`).join("");
+  Object.assign(voter, { masked: 0, resyncs: 0, last: "", voted: null, agree: 0 });
+  groundLog.length = 0;
+  computers = NAMES.slice(0, n).map((x) => new FlightComputer(x));
+  $("voter").hidden = mode !== "tmr";
+  logGround(mode === "tmr" ? "[GROUND] TMR: 3 computers powered on, voter active" : "[GROUND] single computer powered on");
+  renderAll();
+}
+
+// ---------------------------------------------------------------------------
+// Voter (TMR only). It sits outside the computers, like voting hardware:
+//  - commands from the ground are fanned out to every computer
+//  - each second it compares what the computers report: are they up, and do
+//    they agree on SAMPLE_APP's command counter (an application output)?
+//  - a computer that is down, or disagrees with the other two for longer than
+//    DISAGREE_MS, is outvoted; the voter then resyncs it from a healthy one.
+// The ground only ever sees the majority value, so one bad computer is masked.
+// ---------------------------------------------------------------------------
+let voterBusy = false;
+async function runVoter() {
+  if (mode !== "tmr" || voterBusy) return;
+  voterBusy = true;
+  try { await voteOnce(); } finally { voterBusy = false; }
+}
+async function voteOnce() {
+  const now = Date.now();
+  const up = computers.filter((c) => c.healthy(now));
+  // majority value of the counter among healthy computers
+  const tally = new Map(); for (const c of up) if (c.v.ctr !== null) tally.set(c.v.ctr, (tally.get(c.v.ctr) || 0) + 1);
+  let maj = null, majN = 0; for (const [v, n] of tally) if (n > majN) { maj = v; majN = n; }
+  voter.voted = majN >= 2 ? maj : null; voter.agree = majN;
+  for (const c of computers) {
+    if (c.busy || !c.emu) continue;
+    const isUp = c.healthy(now);
+    // down: after its boot, or a boot that is taking far too long
+    if (!isUp) { if (!c.downSince) c.downSince = now; } else c.downSince = 0;
+    const disagrees = isUp && voter.voted !== null && c.v.ctr !== null && c.v.ctr !== voter.voted;
+    if (disagrees) { if (!c.disagreeSince) { c.disagreeSince = now; logGround(`[VOTER] ${c.name} disagrees: counter ${c.v.ctr}, majority ${voter.voted} (masked)`); voter.masked++; } }
+    else c.disagreeSince = 0;
+    const downTooLong = c.downSince && now - c.downSince > (c.reachedOperational ? RESYNC_AFTER_DOWN_MS : BOOT_WINDOW_MS + 15000);
+    const wrongTooLong = c.disagreeSince && now - c.disagreeSince > DISAGREE_MS;
+    if ((downTooLong || wrongTooLong) && voter.voted !== null) {
+      const donor = computers.find((d) => d !== c && d.healthy(now) && d.v.ctr === voter.voted);
+      if (!donor) continue;
+      const why = downTooLong ? "down" : "outvoted";
+      logGround(`[VOTER] ${c.name} ${why}: resyncing from ${donor.name}…`);
+      const ms = await c.resyncFrom(donor);
+      if (ms !== false) { voter.resyncs++; voter.last = `${c.name} ← ${donor.name} (${ms} ms)`; logGround(`[VOTER] ${c.name} resynced from ${donor.name} in ${ms} ms`); }
+      break;   // one resync per round
+    }
   }
-}, 200);
+  render();
+}
+
+setInterval(() => { for (const c of computers) c.tick(); runVoter(); }, 1000);
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+let renderQueued = false;
+function renderSoon() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); } }
+
+function render() {
+  const now = Date.now(), t = target();
+  $("cards").innerHTML = computers.map((c, i) => {
+    const since = (now - c.wd.lastKick) / 1000;
+    const wd = !watchdogsOn ? "disconnected" : !c.wd.enabled ? "off" : !c.wd.byHs ? `boot window ${since.toFixed(0)}/${(c.wd.timeoutMs / 1000).toFixed(0)}s` : `armed, last kick ${since.toFixed(1)}s ago`;
+    const vote = mode !== "tmr" ? "" : c.busy ? '<span class="pill warn">resyncing</span>'
+      : !c.healthy(now) ? '<span class="pill bad">down</span>'
+      : c.disagreeSince ? '<span class="pill bad">outvoted</span>' : '<span class="pill ok">agrees</span>';
+    return `<div class="card${c === t ? " target" : ""}"><h3><span>Computer ${c.name}</span>${vote}</h3>
+      <div>${c.statusHtml || ""}</div>
+      <div><span class="k">watchdog</span> ${wd} · <span class="k">resets</span> ${c.wdResets}</div>
+      <div><span class="k">boots</span> ${c.boots} · <span class="k">failed in a row</span> ${c.failedStreak}${mode === "tmr" ? ` · <span class="k">resyncs</span> ${c.resyncs}` : ""}</div>
+      <div><span class="k">SAMPLE_APP counter</span> ${c.v.ctr ?? "–"} · <span class="k">bits flipped</span> ${c.v.flips}</div>
+      <div><span class="k">ECC</span> ${c.v.ecc ? "on" : "off"}, corrected ${c.v.eccC}, uncorrectable ${c.v.eccU}</div>
+      <div><span class="k">storage</span> ${c.diffBits()} bits differ from launch image</div></div>`;
+  }).join("");
+  // overall status
+  if (mode === "single") {
+    const c = computers[0]; $("status").innerHTML = c ? (c.statusHtml || "") : "loading…";
+  } else {
+    const up = computers.filter((c) => c.healthy(now)).length;
+    $("status").innerHTML = voter.voted !== null && voter.agree === 3 ? `<span class="ok">voted output OK: 3/3 agree</span>`
+      : voter.voted !== null ? `<span class="warn">voted output OK: ${voter.agree}/3 agree, fault masked</span>`
+      : up ? `<span class="warn">no majority yet (${up}/3 up)</span>` : "computers booting…";
+    $("voter").innerHTML = `Voter: SAMPLE_APP counter (voted) <b>${voter.voted ?? "–"}</b> · disagreements masked <b>${voter.masked}</b> · resyncs <b>${voter.resyncs}</b>${voter.last ? ` · last ${voter.last}` : ""}`;
+  }
+  // controls
+  const anyUp = computers.some((c) => c.operational), tUp = t && t.operational && !t.busy;
+  for (const id of ["b-noop", "b-restart", "b-sample-noop", "f-ecc"]) $(id).disabled = !anyUp;
+  for (const id of ["f-query", "f-counter", "f-counter2", "f-data", "f-code", "b-kill"]) $(id).disabled = !tUp;
+  $("b-start").disabled = !t || !t.emu || t.started || t.busy;
+  for (const id of ["st-file", "st-hit", "st-restore", "st-cycle"]) $(id).disabled = !assets.fs || !t;
+  eccWanted = mode === "tmr" ? eccWanted : !!(t && t.v.ecc);
+  $("f-ecc").textContent = "ECC: " + (eccWanted ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccWanted));
+  for (const el of document.querySelectorAll(".tname")) el.textContent = t ? t.name : "";
+}
+function renderEvents() {
+  const t = target(); const all = groundLog.concat(t ? t.events : []).sort((a, b) => a.t - b.t).slice(-80);
+  $("evt").textContent = all.map((e) => e.line).join("\n"); $("evt").scrollTop = 1e9;
+}
+function renderTelemetry() {
+  const t = target(); if (!t) return;
+  $("tlm").textContent = [...t.tlmCounts].sort((x, y) => x[0] - y[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
+}
+function renderAll() { render(); renderEvents(); renderTelemetry(); const t = target(); $("con").textContent = t ? t.con : ""; }
 
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
-function startFsw() { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; status("starting flight software…"); sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); }
-$("b-start").onclick = startFsw;
-$("b-tlm").onclick = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
-$("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
-$("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
-$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); };
+const toAll = (p) => { for (const c of fleet()) c.send(p); };   // ground commands go to every computer
+$("mode").onchange = () => configure($("mode").value);
+$("target").onchange = renderAll;
+$("b-noop").onclick = () => toAll(CMD.esNoop());
+$("b-restart").onclick = () => toAll(CMD.restartSample());
+$("b-sample-noop").onclick = () => toAll(CMD.sampleNoop());
+$("f-ecc").onclick = () => { eccWanted = !eccWanted; toAll(CMD.setEcc(eccWanted)); render(); };
 $("wd-jumper").onclick = () => {
-  wd.jumper = !wd.jumper; if (wd.jumper) { wd.lastKick = Date.now(); if (!wd.byHs) wd.enabled = true; } else wd.enabled = false;
-  $("wd-jumper").textContent = "Watchdog: " + (wd.jumper ? "ON" : "OFF"); $("wd-jumper").setAttribute("aria-pressed", String(wd.jumper));
+  watchdogsOn = !watchdogsOn;
+  for (const c of computers) { if (watchdogsOn) { c.wd.lastKick = Date.now(); c.wd.enabled = true; } else c.wd.enabled = false; }
+  $("wd-jumper").textContent = "Watchdogs: " + (watchdogsOn ? "ON" : "OFF"); $("wd-jumper").setAttribute("aria-pressed", String(watchdogsOn)); render();
 };
+// radiation: only the target computer is hit
+$("f-query").onclick = () => target().send(CMD.fiQuery("SAMPLE_APP"));
+$("f-counter").onclick = () => target().send(CMD.fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80));
+$("f-counter2").onclick = () => target().send(CMD.fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81));
+$("f-data").onclick = () => target().send(CMD.fiRandom("SAMPLE_APP", "data", 8, 0));
+$("f-code").onclick = () => { const c = target(); c.send(CMD.fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => c.send(CMD.sampleNoop()), i * 1200); };
+$("b-kill").onclick = () => target().sh("kill -9 $(pidof core-cpu1)");
+$("b-start").onclick = () => target().startFsw();
+$("st-hit").onclick = () => target().hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
+$("st-restore").onclick = () => target().restoreStorage();
+$("st-cycle").onclick = () => { const c = target(); logGround(`[GROUND] power cycle commanded for ${c.name}`); c.powerCycle(); };
 
-$("st-hit").onclick = () => hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
-$("st-restore").onclick = restoreStorage;
-$("st-cycle").onclick = () => { logEvent("[GROUND] power cycle commanded"); powerCycle(); };
+// repaint watchdog countdowns
+setInterval(render, 1000);
 
-// FAULT_INJ (commands 0x18C0)
-const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
-const fiQuery = (app) => cmdPacket(0x18c0, 2, str(app, 20));
-const fiRandom = (app, region, count, seed) => cmdPacket(0x18c0, 4, cat(str(app, 20), new Uint8Array([REG[region], 0]), u16(count), u32(seed)));
-const fiSymbol = (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20), str(sym, 32), u32(off), new Uint8Array([mask, 0, 0, 0])));
-$("f-query").onclick = () => send(fiQuery("SAMPLE_APP"));
-$("f-counter").onclick = () => send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80));
-$("f-counter2").onclick = () => send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81));
-$("f-ecc").onclick = () => send(cmdPacket(0x18c0, 6, new Uint8Array([eccOn ? 0 : 1, 0, 0, 0])));
-$("f-data").onclick = () => send(fiRandom("SAMPLE_APP", "data", 8, 0));
-$("f-code").onclick = () => { send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); };
-
-loadFiles().then(powerOn).catch((e) => status(`<span class="bad">could not load the VM images: ${e.message}</span>`));
+$("target").innerHTML = '<option value="0">A</option>';
+loadAssets().then(() => configure($("mode").value)).catch((e) => { $("status").innerHTML = `<span class="bad">could not load the VM images: ${e.message}</span>`; });
 </script>
 </body>
 </html>

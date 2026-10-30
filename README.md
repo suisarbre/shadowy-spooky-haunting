@@ -87,6 +87,34 @@ Tested in Chrome (`test/browser-storage.mjs`):
 
 This sets up the next step, a protected golden image the boot loader can fall back to.
 
+## Two configurations: single computer, or TMR
+
+The **Configuration** menu switches between:
+
+- **1 computer: ECC + watchdog + reboot.** Everything above. A fault is survived by correcting it (ECC) or by rebooting (watchdog), with an outage of about 25 s.
+- **3 computers: TMR with voter.** Triple modular redundancy. Three identical flight computers run side by side, each with its own boot storage and watchdog. A voter outside them, like voting hardware, does three things:
+  - fans every ground command out to all three;
+  - each second compares what they report: is each one up, and do they agree on SAMPLE_APP's command counter (an application output)? The ground sees only the majority value, so one bad computer is masked with no outage;
+  - resyncs a computer that is down, or has disagreed with the other two for 12 s, by copying the full running state of a healthy one into it (v86 `save_state` / `restore_state`), the way TMR systems bring a failed unit back in step.
+
+Radiation controls (counter hits, code hits, storage hits, kill) act on the **target** computer only.
+
+Comparing raw telemetry would not work: the three computers are not clock-locked, so timestamps and sequence counts differ even when they agree. The voter compares a chosen application value instead and tolerates the few seconds between housekeeping reports.
+
+Measured in headless Chrome on a 2-core machine (`test/browser-modes.mjs`, 11/11 pass):
+
+| | Result |
+|---|---|
+| Boot, 1 computer / 3 computers | ~11 s / ~29 s |
+| Watchdog kicks with 3 computers running | ~0.85/s each, longest gap 1.3 s (limit 10 s) |
+| Snapshot size, save + restore | 39 MB, ~0.6 s |
+| 1-bit hit on B's counter | B shows 128, ground keeps 0; B outvoted and resynced from A in 0.67 s |
+| C's flight software killed | Resynced from A ~5 s later, no reboot, watchdog never fires |
+| Ground command after resyncs | Reaches all three |
+| Single mode, code hits | Watchdog reset, back on its own |
+
+Memory stays at 128 MB per computer: at 64 MB the 12.5 MB filesystem no longer fits the kernel's boot layout.
+
 ## How it fits together
 
 ```
