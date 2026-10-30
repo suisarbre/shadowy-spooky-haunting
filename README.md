@@ -11,7 +11,7 @@ cd docs && python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-The VM boots in about 10 s. Click **Start cFS**, then **Enable telemetry**. The buttons send real CCSDS commands to cFS. The second row of buttons drives FAULT_INJ: hit SAMPLE_APP's counter and watch it jump in telemetry, or corrupt its code and watch the flight software crash.
+The VM boots in about 10 s. Click **Start cFS**; telemetry is enabled automatically once cFS is up. The buttons send real CCSDS commands to cFS. Like a ground station, the page watches telemetry: if nothing arrives for 6 s it checks whether the flight software process is still alive and reports either a crash or a hang. The second row of buttons drives FAULT_INJ: hit SAMPLE_APP's counter and watch it jump in telemetry, or corrupt its code and watch the flight software crash.
 
 No special server headers are needed: v86 runs single-threaded, so GitHub Pages works as is.
 

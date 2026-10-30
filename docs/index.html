@@ -23,7 +23,7 @@
 </head>
 <body>
 <h1>NASA cFS running in the browser</h1>
-<p class="sub">v86 boots a 32-bit Linux VM; cFS runs inside it. Commands and telemetry cross a virtual serial port. Status: <span id="status">booting VM…</span></p>
+<p class="sub">v86 boots a 32-bit Linux VM; cFS runs inside it. Commands and telemetry cross a virtual serial port. Status: <span id="status">booting VM…</span> <span id="age"></span></p>
 <div class="row">
   <button id="b-start" disabled>Start cFS</button>
   <button id="b-tlm" disabled>Enable telemetry</button>
@@ -66,10 +66,19 @@ emu.add_listener("serial0-output-byte", (b) => {
   if (con.length > 20000) con = con.slice(-15000);
   $("con").textContent = con; $("con").scrollTop = 1e9;
   if (/VM-READY/.test(con) && $("b-start").disabled && !started) { $("status").textContent = "VM ready"; $("b-start").disabled = false; }
-  if (/FSW-DOWN\r?\n/.test(con.slice(-200)) && started) { started = false; $("status").innerHTML = '<span class="bad">flight software crashed: complete failure</span>'; $("b-start").disabled = false; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = true; con += "\n"; }
-  if (/OPERATIONAL/.test(con.slice(-4000)) && started) { $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = false; }
+  if (/FSW-DOWN\r?\n/.test(con.slice(-200)) && started) { started = false; operational = false; probing = false; $("status").innerHTML = '<span class="bad">flight software crashed: complete failure</span>'; $("age").textContent = ""; $("b-start").disabled = false; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = true; con += "\n"; }
+  if (/FSW-ALIVE\r?\n/.test(con.slice(-200)) && probing) { probing = false; lastTlm = Date.now(); $("status").innerHTML = '<span class="bad">no telemetry, but the process is alive (hung?)</span>'; con += "\n"; }
+  if (/OPERATIONAL/.test(con.slice(-4000)) && started && !operational) { operational = true; lastTlm = Date.now(); $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill","f-query","f-counter","f-data","f-code"]) $(id).disabled = false; send(cmdPacket(0x1880, 6, str("127.0.0.1", 16))); }
 });
-let started = false;
+let started = false, operational = false, probing = false, lastTlm = 0;
+// Ground-station style health check: telemetry normally arrives every second
+// (FAULT_INJ housekeeping). If it stops, ask the VM whether cFS is still running.
+setInterval(() => {
+  if (!operational) return;
+  const age = (Date.now() - lastTlm) / 1000;
+  $("age").textContent = `· last telemetry ${age.toFixed(0)}s ago`;
+  if (age > 6 && !probing) { probing = true; $("status").innerHTML = '<span class="bad">telemetry lost, checking…</span>'; sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'"); }
+}, 1000);
 const sh = (cmd) => emu.serial0_send(cmd + "\n");
 
 // data channel: hex-framed CCSDS packets
@@ -78,6 +87,8 @@ emu.add_listener("serial1-output-byte", (b) => {
   const c = String.fromCharCode(b);
   if (c !== "\n") { s1 += c; return; }
   if (s1[0] === "T") {
+    lastTlm = Date.now();
+    if (operational && !probing && /lost|silent|hung/.test($("status").textContent)) $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>';
     const hex = s1.slice(1); const mid = parseInt(hex.slice(0, 4), 16);
     counts.set(mid, (counts.get(mid) || 0) + 1);
     if (mid === 0x0808) {
@@ -105,11 +116,11 @@ const str = (s, n) => { const b = new Uint8Array(n); for (let i = 0; i < s.lengt
 const send = (p) => { const line = "C" + [...p].map((b) => b.toString(16).padStart(2, "0")).join("") + "\n"; emu.serial_send_bytes(1, new TextEncoder().encode(line)); };
 const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
 
-$("b-start").onclick = () => { con = ""; started = true; $("b-start").disabled = true; $("status").textContent = "starting cFS…"; sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
+$("b-start").onclick = () => { con = ""; started = true; operational = false; probing = false; $("b-start").disabled = true; $("status").textContent = "starting cFS…"; sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
 $("b-tlm").onclick = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
 $("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
 $("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
-$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); con = ""; $("status").innerHTML = '<span class="bad">flight software down</span>'; started = false; $("b-start").disabled = false; };
+$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); con = ""; operational = false; probing = false; $("age").textContent = ""; $("status").innerHTML = '<span class="bad">flight software down</span>'; started = false; $("b-start").disabled = false; };
 // ---- FAULT_INJ (commands 0x18C0) ----
 const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
 const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
@@ -121,7 +132,7 @@ const tlmOn = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
 $("f-query").onclick = () => { tlmOn(); send(fiQuery("SAMPLE_APP")); };
 $("f-counter").onclick = () => { tlmOn(); send(fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80)); };
 $("f-data").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "data", 8, 0)); };
-$("f-code").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); setTimeout(() => sh("pidof core-cpu1 >/dev/null || echo FSW-DOW'N'"), 9000); };
+$("f-code").onclick = () => { tlmOn(); send(fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => send(cmdPacket(0x1882, 0)), i * 1200); };
 </script>
 </body>
 </html>
