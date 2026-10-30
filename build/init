@@ -1,0 +1,15 @@
+#!/bin/sh
+# PID 1 inside the v86 VM: minimal system bring-up, then a console shell.
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null
+mkdir -p /dev/mqueue /tmp /dev/shm
+mount -t mqueue mqueue /dev/mqueue
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /dev/shm
+ifconfig lo 127.0.0.1 up
+hostname spacey-sat1
+echo "VM-READY $(cat /proc/uptime)"
+# serial bridge: browser <-> cFS UDP (ttyS1 is the data channel, ttyS0 is the console)
+/bin/serbridge /dev/ttyS1 2>/tmp/serbridge.log &
+exec setsid cttyhack /bin/sh

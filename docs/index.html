@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpaceY cFS in v86</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#d6dde6; --dim:#7d8896; --ok:#3fb950; --bad:#f85149; --acc:#58a6ff; color-scheme: dark; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; padding-block:16px; padding-left:max(16px, env(safe-area-inset-left,0px)); padding-right:max(16px, env(safe-area-inset-right,0px)); }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.sub { color:var(--dim); margin:0 0 12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  button { background:var(--panel); color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; }
+  .box { background:var(--panel); border:1px solid #30363d; border-radius:8px; padding:10px; min-width:0; }
+  .box h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
+  pre { margin:0; height:320px; overflow:auto; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-all; }
+  #status { font-weight:600; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+</style>
+</head>
+<body>
+<h1>NASA cFS running in the browser</h1>
+<p class="sub">v86 boots a 32-bit Linux VM; cFS runs inside it. Commands and telemetry cross a virtual serial port. Status: <span id="status">booting VM…</span></p>
+<div class="row">
+  <button id="b-start" disabled>Start cFS</button>
+  <button id="b-tlm" disabled>Enable telemetry</button>
+  <button id="b-noop" disabled>ES No-op</button>
+  <button id="b-restart" disabled>Restart SAMPLE_APP</button>
+  <button id="b-kill" disabled>Kill flight software</button>
+</div>
+<div class="grid">
+  <div class="box"><h2>VM console (ttyS0)</h2><pre id="con"></pre></div>
+  <div class="box"><h2>cFS events (from telemetry)</h2><pre id="evt"></pre></div>
+  <div class="box"><h2>Telemetry packets by message ID</h2><pre id="tlm"></pre></div>
+</div>
+
+<script src="libv86.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const emu = new V86({
+  wasm_path: "v86.wasm",
+  bios: { url: "bios.bin" },
+  vga_bios: { url: "vgabios.bin" },
+  bzimage: { url: "bzImage" },
+  initrd: { url: "initrd.gz" },
+  cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3",
+  memory_size: 128 * 1024 * 1024,
+  uart1: true, autostart: true,
+  disable_keyboard: true, disable_mouse: true, disable_speaker: true,
+});
+
+// console
+let con = "";
+emu.add_listener("serial0-output-byte", (b) => {
+  con += String.fromCharCode(b);
+  if (con.length > 20000) con = con.slice(-15000);
+  $("con").textContent = con; $("con").scrollTop = 1e9;
+  if (/VM-READY/.test(con) && $("b-start").disabled && !started) { $("status").textContent = "VM ready"; $("b-start").disabled = false; }
+  if (/OPERATIONAL/.test(con.slice(-4000)) && started) { $("status").innerHTML = '<span class="ok">cFS OPERATIONAL</span>'; for (const id of ["b-tlm","b-noop","b-restart","b-kill"]) $(id).disabled = false; }
+});
+let started = false;
+const sh = (cmd) => emu.serial0_send(cmd + "\n");
+
+// data channel: hex-framed CCSDS packets
+let s1 = ""; const counts = new Map(); const evts = [];
+emu.add_listener("serial1-output-byte", (b) => {
+  const c = String.fromCharCode(b);
+  if (c !== "\n") { s1 += c; return; }
+  if (s1[0] === "T") {
+    const hex = s1.slice(1); const mid = parseInt(hex.slice(0, 4), 16);
+    counts.set(mid, (counts.get(mid) || 0) + 1);
+    if (mid === 0x0808) {
+      // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
+      const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
+      const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i < bytes.length && bytes[i]; i++) t += String.fromCharCode(bytes[i]); return t; };
+      const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][bytes[38] | (bytes[39] << 8)] || "?";
+      evts.push(`[${cstr(16, 20)}] ${evType}: ${cstr(48, 122)}`); $("evt").textContent = evts.slice(-60).join("\n"); $("evt").scrollTop = 1e9;
+    }
+    $("tlm").textContent = [...counts].sort((a, b) => a[0] - b[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
+  }
+  s1 = "";
+});
+
+function cmdPacket(mid, fc, payload = new Uint8Array(0)) {
+  const p = new Uint8Array(8 + payload.length);
+  p[0] = mid >> 8; p[1] = mid & 255; p[2] = 0xc0; p[3] = 0; const len = p.length - 7; p[4] = len >> 8; p[5] = len & 255;
+  p[6] = fc; p.set(payload, 8);
+  let x = 0xff; for (const b of p) x ^= b; p[7] = x;
+  return p;
+}
+const str = (s, n) => { const b = new Uint8Array(n); for (let i = 0; i < s.length && i < n; i++) b[i] = s.charCodeAt(i); return b; };
+const send = (p) => { const line = "C" + [...p].map((b) => b.toString(16).padStart(2, "0")).join("") + "\n"; emu.serial_send_bytes(1, new TextEncoder().encode(line)); };
+const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+
+$("b-start").onclick = () => { started = true; $("b-start").disabled = true; $("status").textContent = "starting cFS…"; sh("cd /cfs/cpu1 && ./core-cpu1 2>&1 | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]' &"); };
+$("b-tlm").onclick = () => send(cmdPacket(0x1880, 6, str("127.0.0.1", 16)));
+$("b-noop").onclick = () => send(cmdPacket(0x1806, 0));
+$("b-restart").onclick = () => send(cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)));
+$("b-kill").onclick = () => { sh("kill -9 $(pidof core-cpu1)"); $("status").innerHTML = '<span class="bad">flight software down</span>'; started = false; $("b-start").disabled = false; };
+</script>
+</body>
+</html>

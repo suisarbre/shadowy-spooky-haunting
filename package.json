@@ -1,0 +1,7 @@
+{
+  "name": "spacey-cfs-v86",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node test/test-cfs.mjs" },
+  "devDependencies": { "v86": "0.5.470" }
+}
