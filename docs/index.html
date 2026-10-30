@@ -760,7 +760,9 @@ function renderScope() {
   if (!c.emu || c.busy) { $("sc-head").textContent = `computer ${c.name} is powering up…`; return; }
   const rows = scopeRows(c);
   if (scope.mode === "tmr" && !rows.length) { $("sc-head").textContent = `computer ${c.name}: waiting for the memory map to locate the TMR copies…`; box.innerHTML = ""; return; }
-  const mem = rows.map((r) => c.emu.read_memory(r.pa, ROW));
+  let mem;
+  try { mem = rows.map((r) => c.emu.read_memory(r.pa, ROW)); }
+  catch (e) { scope.prev = null; return; } // emulator torn down mid power cycle / mode switch
   // remember which bits just changed, to flash them
   if (scope.prev && scope.prev.length === mem.length) {
     mem.forEach((bytes, i) => bytes.forEach((v, j) => {

@@ -1,7 +1,6 @@
 // 3D beam end to end in headless Chrome
-// Serve docs/ on port 8771, then: node test/browser-beam.mjs (needs Playwright; set CHROME to a Chromium path if not bundled)
-import { chromium } from "playwright";
-const b = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+import { chromium } from "/opt/npm-tools/node_modules/playwright/index.mjs";
+const b = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome", args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
 const p = await b.newPage({ viewport: { width: 420, height: 1300 } });
 const errs = []; p.on("pageerror", (e) => errs.push(String(e).slice(0, 200))); p.on("console", (m) => { if (m.type() === "error") errs.push("console: " + m.text().slice(0, 200)); });
 const t0 = Date.now(); const T = () => ((Date.now() - t0) / 1000).toFixed(0).padStart(4) + "s";
@@ -11,7 +10,7 @@ const result = (name, ok, detail) => console.log(`${T()} ${ok ? "PASS" : "FAIL"}
 
 await p.goto("http://127.0.0.1:8771/");
 await until(() => computers[0] && computers[0].operational && computers[0].map && computers[0].calc);
-const m = await p.evaluate(() => { const c = computers[0]; const cats = {}; for (let i = 0; i < 32768; i++) { const r = c.map.pageRun[i]; const k = r < 0 ? "free" : c.map.runs[r].cat; cats[k] = (cats[k] || 0) + 1; } return cats; });
+const m = await p.evaluate(() => { const c = computers[0]; const cats = {}; for (let i = 0; i < RAM_PAGES; i++) { const r = c.map.pageRun[i]; const k = r < 0 ? "free" : c.map.runs[r].cat; cats[k] = (cats[k] || 0) + 1; } return cats; });
 result("memory map reached the page", m.cfs > 100 && m.kernel > 100, JSON.stringify(m));
 await sleep(1000);
 await p.screenshot({ path: "/home/claude/work/beam-a.png", clip: { x: 0, y: 0, width: 420, height: 700 } });
@@ -53,6 +52,7 @@ await sleep(300);
 await p.screenshot({ path: "/home/claude/work/beam-b.png", clip: { x: 0, y: 0, width: 420, height: 760 } });
 
 // 5) three boards in TMR mode; firing at B targets B
+await p.click("#st-restore"); // the flash hit above left latent kernel damage
 await p.selectOption("#mode", "tmr");
 await until(() => computers.length === 3 && computers.every((c) => c.operational && c.map), null, 240000);
 const tb = await p.evaluate(() => { const c = computers[1]; let pg = 8000; while (c.map.pageRun[pg] >= 0) pg++; beamAtAddress(1, pg * 4096); return { target: $("target").value, log: document.getElementById("beamlog").textContent }; });
