@@ -185,6 +185,15 @@ A finding for the paper: the three TMR copies were placed on **adjacent physical
 
 three.js r160 is bundled in `docs/vendor/` (MIT licence included) so the demo works offline.
 
+## Memory microscope
+
+Below the 3D boards is a live bit view of the target computer's real RAM, read from the emulator's physical memory every 300 ms.
+
+- **TMR calculator copies**: the `step` and `sum` words of TMR_CALC's three memory partitions, side by side. Bits that change flash yellow, so you can watch the copies count up together.
+- **Click any bit to flip it.** The flip goes through the same path as a beam hit, so hardware ECC (when on) still corrects it. Flip one bit in copy 2 and you see it turn red, then the software vote rewrites it a moment later.
+- **A 3D beam hit on RAM** opens the microscope at that byte with the hit bit outlined. Use **◀ / ▶ 64 bytes** to look around, and **Last hit** to jump back.
+- The header names what the bytes belong to (process, mapping, virtual address), from the same page-table map the 3D view uses.
+
 ## How it fits together
 
 ```

@@ -40,6 +40,28 @@
   .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--dim); }
   .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
   #beamlog { font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; color:var(--fg); min-height:1.4em; word-break:break-word; }
+  .scope { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; min-width:0; }
+  .scope-head { font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; color:var(--dim); margin:6px 0; word-break:break-word; }
+  .bits { overflow-x:auto; font:12px/1 ui-monospace, Menlo, Consolas, monospace; }
+  .brow { display:flex; align-items:center; gap:8px; padding:2px 0; white-space:nowrap; }
+  .brow .addr { color:var(--dim); width:7.6em; flex:none; }
+  .brow .addr.lbl { width:auto; min-width:7.6em; }
+  .brow .val { color:var(--dim); flex:none; }
+  .byte { display:inline-flex; gap:1px; margin-right:5px; }
+  .bit { width:11px; height:17px; display:inline-flex; align-items:center; justify-content:center; border-radius:2px; background:#0d1117; color:#6e7681; cursor:pointer; user-select:none; transition:background .6s, color .6s; }
+  .bit.one { background:#1f6feb; color:#e6edf3; }
+  .bit.chg { background:#e3b341; color:#0d1117; transition:none; }
+  .bit.hit { outline:2px solid var(--bad); outline-offset:-1px; }
+  .bit:hover { outline:1px solid var(--acc); }
+  .brow.sep { border-top:1px solid var(--line); margin-top:4px; padding-top:6px; }
+  @media (max-width: 520px) {
+    .bits { font-size:10px; }
+    .brow { gap:5px; }
+    .brow .addr { width:6.4em; }
+    .brow .addr.lbl { min-width:6.4em; }
+    .byte { gap:0; margin-right:3px; }
+    .bit { width:8px; height:16px; box-sizing:border-box; border-right:1px solid var(--panel); border-radius:0; }
+  }
   .calc { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:10px; }
   .calc div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-variant-numeric:tabular-nums; }
   .calc .k { display:block; color:var(--dim); font-size:12px; }
@@ -78,6 +100,17 @@
   </div>
 </div>
 <p id="beamlog"></p>
+<div class="scope" aria-label="Memory microscope">
+  <div class="row" style="margin-bottom:4px">
+    <b>Microscope</b>
+    <button id="sc-tmr">TMR calculator copies</button>
+    <button id="sc-last" disabled>Last hit</button>
+    <button id="sc-prev">◀ 64 bytes</button>
+    <button id="sc-next">64 bytes ▶</button>
+  </div>
+  <div class="scope-head" id="sc-head">Click a chip in the 3D view, or pick a view above. Click any bit to flip it.</div>
+  <div class="bits" id="sc-bits"></div>
+</div>
 <div class="cards" id="cards"></div>
 <p class="sub" id="voter" hidden></p>
 
@@ -667,7 +700,7 @@ function renderAll() { render(); renderEvents(); renderTelemetry(); const t = ta
 // ---------------------------------------------------------------------------
 const toAll = (p) => { for (const c of fleet()) c.send(p); };   // ground commands go to every computer
 $("mode").onchange = () => configure($("mode").value);
-$("target").onchange = renderAll;
+$("target").onchange = () => { renderAll(); scope.prev = null; renderScope(); };
 $("b-noop").onclick = () => toAll(CMD.esNoop());
 $("b-restart").onclick = () => toAll(CMD.restartSample());
 $("b-sample-noop").onclick = () => toAll(CMD.sampleNoop());
@@ -695,6 +728,92 @@ $("b-start").onclick = () => target().startFsw();
 $("st-hit").onclick = () => target().hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
 $("st-restore").onclick = () => target().restoreStorage();
 $("st-cycle").onclick = () => { const c = target(); logGround(`[GROUND] power cycle commanded for ${c.name}`); c.powerCycle("ground command"); };
+
+// ---------------------------------------------------------------------------
+// Microscope: the actual bits of the emulated RAM, re-read a few times a second.
+// Bits that change flash; a click flips exactly that bit through the same
+// hardware path as the beam (so ECC, when on, corrects it).
+// ---------------------------------------------------------------------------
+const scope = { mode: "tmr", base: 0, prev: null, chg: new Map(), hits: new Map(), lastHit: null };
+const SCOPE_BYTES = 64, ROW = 4;
+
+// rows to show: [{ pa, label, decode? }] each ROW bytes long
+function scopeRows(c) {
+  if (scope.mode === "tmr") {
+    const rows = [];
+    for (let k = 1; k <= 3; k++) {
+      const run = c.map && c.map.runs.find((r) => r.label === `tmr:CALC:${k}`);
+      if (!run) continue;
+      const pa = run.pfn * 4096;
+      rows.push({ pa, label: `copy ${k} step`, u32: true, sep: k > 1 }, { pa: pa + 4, label: `copy ${k} sum`, u32: true });
+    }
+    return rows;
+  }
+  const rows = [];
+  for (let i = 0; i < SCOPE_BYTES; i += ROW) rows.push({ pa: scope.base + i });
+  return rows;
+}
+
+function renderScope() {
+  const c = target(); if (!c) return;
+  const box = $("sc-bits"), now = performance.now();
+  if (!c.emu || c.busy) { $("sc-head").textContent = `computer ${c.name} is powering up…`; return; }
+  const rows = scopeRows(c);
+  if (scope.mode === "tmr" && !rows.length) { $("sc-head").textContent = `computer ${c.name}: waiting for the memory map to locate the TMR copies…`; box.innerHTML = ""; return; }
+  const mem = rows.map((r) => c.emu.read_memory(r.pa, ROW));
+  // remember which bits just changed, to flash them
+  if (scope.prev && scope.prev.length === mem.length) {
+    mem.forEach((bytes, i) => bytes.forEach((v, j) => {
+      const d = v ^ scope.prev[i][j];
+      for (let b = 0; b < 8; b++) if (d & (1 << b)) scope.chg.set(`${rows[i].pa + j}:${b}`, now);
+    }));
+  }
+  scope.prev = mem.map((b) => b.slice());
+  if (scope.mode === "tmr") {
+    const calc = c.calc;
+    $("sc-head").textContent = `computer ${c.name} · TMR_CALC state in three memory partitions (little-endian u32s); voted sum in telemetry: ${calc ? calc.sum : "–"}`;
+  } else {
+    const w = c.describe(scope.base);
+    $("sc-head").textContent = `computer ${c.name} · RAM 0x${scope.base.toString(16).padStart(7, "0")}–0x${(scope.base + SCOPE_BYTES - 1).toString(16)} · ${w.label}${w.va != null ? ` · va 0x${w.va.toString(16)}` : ""}`;
+  }
+  box.innerHTML = rows.map((r, i) => {
+    const bytes = mem[i];
+    const cells = [...bytes].map((v, j) => {
+      const addr = r.pa + j;
+      let bits = "";
+      for (let b = 7; b >= 0; b--) {
+        const key = `${addr}:${b}`, on = (v >> b) & 1;
+        const flash = now - (scope.chg.get(key) || -1e9) < 450, hit = now - (scope.hits.get(key) || -1e9) < 3000;
+        bits += `<span class="bit${on ? " one" : ""}${flash ? " chg" : ""}${hit ? " hit" : ""}" data-a="${addr}" data-b="${b}" title="0x${addr.toString(16)} bit ${b}">${on}</span>`;
+      }
+      return `<span class="byte">${bits}</span>`;
+    }).join("");
+    const u = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    const val = r.u32 ? `= ${u >>> 0}` : [...bytes].map(hex2).join(" ");
+    return `<div class="brow${r.sep ? " sep" : ""}"><span class="addr${r.label ? " lbl" : ""}">${r.label || "0x" + r.pa.toString(16).padStart(7, "0")}</span>${cells}<span class="val">${val}</span></div>`;
+  }).join("");
+}
+
+function scopeAt(pa, mark) {
+  scope.mode = "window"; scope.base = Math.max(0, Math.floor(pa / SCOPE_BYTES) * SCOPE_BYTES); scope.prev = null;
+  if (mark) { scope.lastHit = pa; $("sc-last").disabled = false; }
+  renderScope(); window.markAddress && window.markAddress(computers.indexOf(target()), scope.base);
+}
+// called for every RAM hit so the microscope can show it
+function noteHit(pa, mask) { const t = performance.now(); for (let b = 0; b < 8; b++) if (mask & (1 << b)) scope.hits.set(`${pa}:${b}`, t); }
+
+$("sc-bits").addEventListener("click", (e) => {
+  const el = e.target.closest(".bit"); if (!el) return;
+  const c = target(), pa = +el.dataset.a, b = +el.dataset.b;
+  const r = c.hitRam(pa, 1 << b);
+  if (r) { noteHit(pa, 1 << b); $("beamlog").textContent = `${c.name} RAM 0x${pa.toString(16).padStart(7, "0")} bit ${b} → ${r.what.label}: ${r.result}`; window.showBeamAt && window.showBeamAt(computers.indexOf(c), pa); }
+  renderScope();
+});
+$("sc-tmr").onclick = () => { scope.mode = "tmr"; scope.prev = null; renderScope(); };
+$("sc-last").onclick = () => { if (scope.lastHit != null) scopeAt(scope.lastHit); };
+$("sc-prev").onclick = () => { if (scope.mode === "tmr") scope.base = 0; scopeAt(Math.max(0, scope.base - SCOPE_BYTES)); };
+$("sc-next").onclick = () => scopeAt(Math.min(RAM_PAGES * 4096 - SCOPE_BYTES, scope.base + SCOPE_BYTES));
+setInterval(() => { if (document.visibilityState === "visible") renderScope(); }, 300);
 
 // repaint watchdog countdowns
 setInterval(render, 1000);
@@ -757,6 +876,7 @@ function labelCanvas(text, w = 256, h = 256, bg = "#1c2128") {
 
 function buildBoards() {
   for (const b of boards) scene.remove(b.group);
+  for (const m of markers.values()) scene.remove(m); markers.clear();
   boards = [];
   const n = computers.length;
   computers.forEach((c, i) => {
@@ -884,6 +1004,7 @@ function fire(p) {
   let msg;
   if (p.kind === "ram" && p.onTop) {
     const r = p.c.hitRam(p.pa, p.mask);
+    if (r) { noteHit(p.pa, p.mask); scopeAt(p.pa, true); }
     msg = r ? `${p.c.name} RAM 0x${p.pa.toString(16).padStart(7, "0")} mask 0x${hex2(p.mask)} → ${r.what.label}: ${r.result}` : `${p.c.name} is powering up: no hit`;
   } else if (p.kind === "flash" && p.onTop) {
     if (!p.valid) msg = `${p.c.name} SD card: unused area, no effect`;
@@ -912,6 +1033,24 @@ window.beamAt = (computerIndex, kind, u, v) => {
   fire(p); return { kind: p.kind, pa: p.pa, index: p.index, mask: p.mask, what: p.what };
 };
 // aim at a physical address (finds the pixel for that page)
+// world position of a physical address on a board's RAM chip
+function pointForAddress(ci, pa) {
+  const b = boards[ci]; if (!b) return null;
+  const m = b.ram, H = m.userData.canvas.height; m.updateWorldMatrix(true, false);
+  const page = pa >>> 12, col = page % RAM_W, row = (page / RAM_W) | 0, byte = pa & 4095;
+  const u = (col + ((byte % 64) + 0.5) / 64) / RAM_W, v = (row + (((byte / 64) | 0) + 0.5) / 64) / H;
+  const box = new THREE.Box3().setFromObject(m), size = box.getSize(new THREE.Vector3());
+  return new THREE.Vector3(box.min.x + u * size.x, box.max.y, box.min.z + v * size.z);
+}
+window.showBeamAt = (ci, pa) => { const pt = pointForAddress(ci, pa); if (pt) showBeam(pt, 0xff5a4f); };
+// a small frame on the chip where the microscope is looking
+const markers = new Map();
+window.markAddress = (ci, pa) => {
+  const pt = pointForAddress(ci, pa); if (!pt) return;
+  let m = markers.get(ci);
+  if (!m) { m = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.1, 4), new THREE.MeshBasicMaterial({ color: 0xffffff })); m.rotation.x = -Math.PI / 2; m.rotation.z = Math.PI / 4; scene.add(m); markers.set(ci, m); }
+  m.position.copy(pt).add(new THREE.Vector3(0, 0.01, 0)); dirty = true;
+};
 window.beamAtAddress = (computerIndex, pa) => {
   const page = pa >>> 12, col = page % RAM_W, row = (page / RAM_W) | 0, byte = pa & 4095;
   const H = boards[computerIndex] ? boards[computerIndex].ram.userData.canvas.height : 1;
