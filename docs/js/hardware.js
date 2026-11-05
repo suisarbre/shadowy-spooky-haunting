@@ -177,41 +177,57 @@ export class FlightComputer {
   //           (the cell stays flipped until the scrubber or a write fixes it); two are
   //           detected and raise a machine check, which resets the computer; three or
   //           more may be "corrected" into the wrong value without any alarm.
-  hitRam(pa, mask, { quiet = false } = {}) {
-    if (!this.emu) return null;
-    const what = this.describe(pa);
-    let outcome, text;
-    const before = this.readRam(pa, 1); if (!before) return null;
-    if (!this.ecc.on) {
-      this.emu.write_memory([before[0] ^ mask], pa);
-      outcome = "landed"; text = `landed (${hex2(before[0])}→${hex2(before[0] ^ mask)})`;
-    } else {
+  hitRam(pa, mask, opts) { return this.hitRamMany([{ pa, mask }], opts); }
+  // One particle can flip several cells at once. They are applied together and
+  // each 8-byte word is decoded once with all its new errors, as the controller
+  // would see them on the next read.
+  hitRamMany(cells, { quiet = false } = {}) {
+    if (!this.emu || !cells.length) return null;
+    const words = new Map();
+    for (const { pa, mask } of cells) {
+      if (!mask || pa >= this.pages * 4096) continue;
       const base = pa - (pa % WORD);
-      let w = this.ecc.latent.get(base);
-      const now = this.readRam(base, WORD);
-      if (w && !sameBytes(now, w.ref)) { this.ecc.latent.delete(base); w = null; }   // software rewrote the word since: old error gone
-      if (!w) w = { e: new Uint8Array(WORD), ref: now, t: Date.now() };
-      w.e[pa % WORD] ^= mask;
-      const d = decode(w.e);
-      if (d.kind === "clean") { this.ecc.latent.delete(base); outcome = "cancelled"; text = "flipped the same cell back: no error left"; }
-      else if (d.kind === "corrected") { this.ecc.latent.set(base, w); this.ecc.corrected++; outcome = "corrected"; text = "corrected by ECC (cell stays flipped until the scrubber passes)"; }
-      else if (d.kind === "detected") {
-        this.ecc.detected++;
-        if (what.cat === "free") { this.ecc.latent.set(base, w); outcome = "detected-unused"; text = `ECC detected a ${bitsSet(w.e)}-bit error it cannot fix, in free memory: nothing reads it yet`; }
-        else { outcome = "machine-check"; text = `ECC detected a ${bitsSet(w.e)}-bit error it cannot fix: machine check, the computer resets`; }
-      } else {
-        // the decoder "fixed" the wrong bit or saw nothing: software reads a wrong value, with no alarm
-        this.ecc.latent.delete(base); this.ecc.silent++;
-        const out = new Uint8Array(WORD); for (let i = 0; i < WORD; i++) out[i] = now[i] ^ d.residual[i];
-        this.emu.write_memory(out, base);
-        outcome = "silent"; text = `${bitsSet(w.e)} bits wrong in one word: ECC miscorrected it, software now reads a wrong value with no alarm`;
-      }
+      if (!words.has(base)) words.set(base, new Uint8Array(WORD));
+      words.get(base)[pa % WORD] ^= mask;
     }
-    if (!quiet) this.log(`RAM hit ${hexAddr(pa)} mask 0x${hex2(mask)} (${popcount(mask)} bit${popcount(mask) > 1 ? "s" : ""}) · ${what.label} · ${text}`);
-    const r = { pa, mask, what, outcome, text };
+    const results = [];
+    for (const [base, e] of words) { const r = this.hitWord(base, e); if (r) results.push(r); }
+    if (!results.length) return null;
+    const RANK = ["cancelled", "landed", "corrected", "detected-unused", "silent", "machine-check"];
+    const worst = results.reduce((a, b) => (RANK.indexOf(b.outcome) > RANK.indexOf(a.outcome) ? b : a));
+    const outcomes = {}; let bits = 0;
+    for (const r of results) { outcomes[r.outcome] = (outcomes[r.outcome] || 0) + 1; bits += r.bits; }
+    const first = cells[0], what = this.describe(first.pa);
+    const text = results.length === 1 ? worst.text : `${bits} bits in ${results.length} words: ${Object.entries(outcomes).map(([k, n]) => `${n} ${k}`).join(", ")}${worst.outcome === "machine-check" ? " · machine check, the computer resets" : ""}`;
+    if (!quiet) this.log(`RAM hit ${hexAddr(first.pa)}${bits > 1 ? ` (${bits} bits)` : ` mask 0x${hex2(first.mask)}`} · ${what.label} · ${text}`);
+    const r = { pa: first.pa, mask: first.mask, what, outcome: worst.outcome, text, bits, words: results.length, outcomes, results };
     this.emit("ram-hit", r);
-    if (outcome === "machine-check") { this.fram.mcResets++; this.log("MACHINE CHECK: uncorrectable memory error, hardware reset"); this.powerCycle("ECC machine check"); }
+    if (worst.outcome === "machine-check") { this.fram.mcResets++; this.log("MACHINE CHECK: uncorrectable memory error, hardware reset"); this.powerCycle("ECC machine check"); }
     return r;
+  }
+  hitWord(base, e) {
+    const now = this.readRam(base, WORD); if (!now) return null;
+    const k = e.findIndex((x) => x), what = this.describe(base + k), bits = bitsSet(e);
+    if (!this.ecc.on) {
+      this.emu.write_memory(now.map((v, i) => v ^ e[i]), base);
+      return { outcome: "landed", bits, what, text: bits === 1 ? `landed (${hex2(now[k])}→${hex2(now[k] ^ e[k])})` : `${bits} bits landed` };
+    }
+    let w = this.ecc.latent.get(base);
+    if (w && !sameBytes(now, w.ref)) { this.ecc.latent.delete(base); w = null; }   // software rewrote the word since: old error gone
+    if (!w) w = { e: new Uint8Array(WORD), ref: now, t: Date.now() };
+    for (let i = 0; i < WORD; i++) w.e[i] ^= e[i];
+    const d = decode(w.e), n = bitsSet(w.e);
+    if (d.kind === "clean") { this.ecc.latent.delete(base); return { outcome: "cancelled", bits, what, text: "flipped the same cell back: no error left" }; }
+    if (d.kind === "corrected") { this.ecc.latent.set(base, w); this.ecc.corrected++; return { outcome: "corrected", bits, what, text: "corrected by ECC (cell stays flipped until the scrubber passes)" }; }
+    if (d.kind === "detected") {
+      this.ecc.detected++;
+      if (what.cat === "free") { this.ecc.latent.set(base, w); return { outcome: "detected-unused", bits, what, text: `ECC detected a ${n}-bit error it cannot fix, in free memory: nothing reads it yet` }; }
+      return { outcome: "machine-check", bits, what, text: `ECC detected a ${n}-bit error it cannot fix: machine check, the computer resets` };
+    }
+    // the decoder "fixed" the wrong bit or saw nothing: software reads a wrong value, with no alarm
+    this.ecc.latent.delete(base); this.ecc.silent++;
+    this.emu.write_memory(now.map((v, i) => v ^ d.residual[i]), base);
+    return { outcome: "silent", bits, what, text: `${n} bits wrong in one word: ECC miscorrected it, software now reads a wrong value with no alarm` };
   }
 
   setEcc(on) {
@@ -253,15 +269,23 @@ export class FlightComputer {
     for (let i = 0; i < n; i++) { const x = index + i; out[i] = x < kl ? this.sd.kernel[x] : this.sd.fs[x - kl] ?? 0; }
     return out;
   }
-  hitSd(index, mask) {
-    const kl = this.sd.kernel.length, inK = index < kl, area = inK ? this.sd.kernel : this.sd.fs, abs = inK ? index : index - kl;
-    if (abs >= area.length) return null;
-    const what = this.describeSd(index), before = area[abs];
-    area[abs] ^= mask;
-    const x = (this.sd.diffs.get(index) || 0) ^ mask;
-    if (x) this.sd.diffs.set(index, x); else this.sd.diffs.delete(index);
-    this.log(`SD card hit byte ${index} mask 0x${hex2(mask)} · ${what.label} · ${hex2(before)}→${hex2(area[abs])}, nothing happens until the next boot reads it`);
-    const r = { index, mask, what };
+  hitSd(index, mask, opts) { return this.hitSdMany([{ index, mask }], opts); }
+  hitSdMany(cells, { quiet = false } = {}) {
+    const kl = this.sd.kernel.length, hit = [];
+    for (const { index, mask } of cells) {
+      const inK = index < kl, area = inK ? this.sd.kernel : this.sd.fs, abs = inK ? index : index - kl;
+      if (!mask || abs >= area.length) continue;
+      area[abs] ^= mask;
+      const x = (this.sd.diffs.get(index) || 0) ^ mask;
+      if (x) this.sd.diffs.set(index, x); else this.sd.diffs.delete(index);
+      hit.push({ index, mask, what: this.describeSd(index) });
+    }
+    if (!hit.length) return null;
+    // report the most important thing damaged
+    const ORDER = ["kernel", "fsw", "app", "lib", "other"], main = hit.reduce((a, b) => (ORDER.indexOf(b.what.cat) < ORDER.indexOf(a.what.cat) ? b : a));
+    const bits = hit.reduce((n, h) => n + popcount(h.mask), 0);
+    if (!quiet) this.log(`SD card hit byte ${main.index}${bits > 1 ? ` (${bits} bits)` : ` mask 0x${hex2(main.mask)}`} · ${main.what.label} · nothing happens until the next boot reads it`);
+    const r = { index: main.index, mask: main.mask, what: main.what, bits };
     this.emit("sd-hit", r);
     return r;
   }

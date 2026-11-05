@@ -22,7 +22,8 @@ await ev(() => sim.zoomToCopy(2)); await sleep(2200);
 let z = await ev(() => ({ level: sim.board.level, where: sim.board.center() }));
 result("fly to TMR copy 2: zoomed to readable bits", z.level === "text" && /tmr:CALC:2/.test(z.where), `${z.level} · ${z.where}`);
 await p.screenshot({ path: "test-zoom.png" });
-// a real click at the centre of the view flips exactly the bit under it
+// a real click at the centre of the view flips exactly the bit under it (single-bit particle)
+await ev(() => sim.applySetup({ particle: "bit" }));
 const box = await p.locator("#view3d canvas").boundingBox();
 const aim = await ev(([x, y]) => { const q = sim.board.pickAt(x, y); return { addr: q.addr, bit: q.bit, before: sim.fc.readRam(q.addr, 1)[0] }; }, [box.x + box.width / 2, box.y + box.height / 2]);
 await p.mouse.click(box.x + box.width / 2, box.y + box.height / 2); await sleep(100);
@@ -38,6 +39,20 @@ await ev(() => sim.applySetup({ tmr: false })); await until(() => !sim.fc.app.ca
 await ev(() => { const r = sim.fc.findRun("tmr:CALC:1"); sim.board.strikeAt("ram", r.pfn * 4096 + 4, 4); });
 result("TMR off: the same hit on copy 1 makes the answer wrong", await until(() => !sim.calcOk(sim.fc.app.calc), null, 6000), JSON.stringify(await ev(() => sim.fc.app.calc)));
 await ev(() => { sim.applySetup({ tmr: true }); sim.fc.send(sim.commands.calcReset()); });
+
+// ---- particle tracks (ECC off) ----
+const far = await ev(() => { let pg = 12000; while (sim.fc.map.pageRun[pg] >= 0) pg++; return pg * 4096 + 512; });
+const diff = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) for (let x = a[i] ^ b[i]; x; x >>= 1) n += x & 1; return n; };
+const shot = (pa, bit, kind, dir) => ev(([pa, bit, kind, dir]) => { const before = [...sim.fc.readRam(pa - 256, 512)]; const h = sim.board.strikeAt("ram", pa, bit, kind, dir); return { before, after: [...sim.fc.readRam(pa - 256, 512)], h: h && { none: h.none, bits: h.bits, words: h.words, outcome: h.outcome } }; }, [pa, bit, kind, dir]);
+const deg = (d, alongRow) => { const t = d * Math.PI / 180; return alongRow ? { x: Math.sin(t), y: -Math.cos(t), z: 0 } : { x: 0, y: -Math.cos(t), z: Math.sin(t) }; };
+let sh = await shot(far, 4, "light", deg(0, true));
+result("light ion straight down: exactly one bit", diff(sh.before, sh.after) === 1, JSON.stringify(sh.h));
+sh = await shot(far + 32, 4, "light", deg(60, true));
+result("light ion at 60°: too little charge per cell, nothing flips", diff(sh.before, sh.after) === 0 && sh.h.none, JSON.stringify(sh.h));
+sh = await shot(far + 64, 7, "heavy", deg(75, true));
+result("heavy ion at 75° along a row: a line of bits in one or two words", sh.h.bits >= 5 && sh.h.words <= 2, JSON.stringify(sh.h));
+sh = await shot(far + 96, 4, "heavy", deg(75, false));
+result("heavy ion at 75° across rows: one bit in each of several words", sh.h.bits >= 5 && sh.h.words === sh.h.bits, JSON.stringify(sh.h));
 
 // ---- ECC ----
 await ev(() => sim.applySetup({ ecc: true }));
@@ -61,11 +76,26 @@ result("ECC switched off: the error it was hiding appears in memory", (r.before 
 // 2-bit upset in memory the flight software uses: machine check
 await ev(() => sim.applySetup({ ecc: true }));
 const used = await ev(() => { const r = sim.fc.findRun("tmr:CALC:1"); return r.pfn * 4096 + 200; });
-r = await ev((pa) => ({ o: sim.board.strikeAt("ram", pa, 3, "2").outcome }), used);
+// a heavy ion at 75° along the row: a line of cells inside one word
+r = await ev((pa) => ({ o: sim.board.strikeAt("ram", pa, 7, "heavy", { x: Math.sin(1.31), y: -Math.cos(1.31), z: 0 }).outcome }), used);
 await sleep(300);
-result("2-bit upset in used memory: machine check, the computer resets", r.o === "machine-check" && await ev(() => sim.fc.fram.lastReset === "ECC machine check"), JSON.stringify(r));
+result("heavy ion at a low angle along a row, used memory: machine check, the computer resets", r.o === "machine-check" && await ev(() => sim.fc.fram.lastReset === "ECC machine check"), JSON.stringify(r));
 result("...and comes back", await up());
 await ev(() => sim.applySetup({ ecc: false }));
+
+// with ECC on, the across-rows line is fully corrected
+await ev(() => sim.applySetup({ ecc: true }));
+sh = await shot(far + 1024 + 8, 4, "heavy", deg(75, false));
+result("ECC on, heavy ion across rows: every bit corrected", sh.h.outcome === "corrected" && sh.h.words >= 5 && diff(sh.before, sh.after) === 0, JSON.stringify(sh.h));
+await ev(() => sim.applySetup({ ecc: false }));
+
+// ---- background radiation ----
+await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 604800 }); });
+await sleep(6000);
+r = await ev(() => ({ ...sim.bg.s, survival: document.getElementById("survival").innerText.replace(/\s+/g, " ") }));
+await ev(() => { sim.applySetup({ bg: false }); sim.fc.restoreSd(); });
+result("background radiation: random strikes over the board, mission clock runs", r.strikes > 100 && r.ram > 10 && r.missionS > 30 * 86400 && /mission time/i.test(r.survival), `${r.strikes} strikes, ${r.ram} on RAM, ${r.bits} bits · ${r.survival.slice(0, 160)}`);
+if (!(await ev(() => sim.fc.operational))) await up();
 
 // ---- watchdog (mission 2 ticks itself off) ----
 await ev(() => { sim.missions.select("watchdog"); sim.applySetup({ watchdog: true }); });
@@ -78,8 +108,8 @@ r = await ev(() => sim.missions.done().watchdog);
 result("mission 2 goals ticked off by themselves", r && r.every(Boolean), JSON.stringify(r));
 
 // ---- particle shower ----
-r = await ev(() => { const run = sim.fc.map.runs.find((x) => x.label === "heap") || sim.fc.map.runs.find((x) => x.cat === "fsw"); const h = sim.board.strikeAt("ram", run.pfn * 4096 + 8, 0, "shower"); return h && h.shower; });
-result("particle shower flips many bits at once", r && Object.values(r).reduce((a, n) => a + n, 0) >= 30, JSON.stringify(r));
+r = await ev(() => { const run = sim.fc.map.runs.find((x) => x.label === "heap") || sim.fc.map.runs.find((x) => x.cat === "fsw"); const h = sim.board.strikeAt("ram", run.pfn * 4096 + 8, 0, "flare"); return h && { bits: h.bits, words: h.words, outcomes: h.outcomes }; });
+result("flare burst flips many bits at once", r && r.bits >= 10, JSON.stringify(r));
 await ev(() => sim.fc.powerCycle("ground command")); await up();
 
 // ---- SD card: latent damage, boot loop, restore (mission 6) ----

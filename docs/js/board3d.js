@@ -10,11 +10,13 @@ import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";   // three.js r160, bundled
 import { hex2, hexAddr } from "./util.js";
 import { WORD } from "./ecc.js";
+import { track, PARTICLES, randomDirection, randomParticle } from "./radiation.js";
 
 export const COLORS = { free: "#161b22", kernel: "#8957e5", fsw: "#1f6feb", app: "#2ea043", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
 const RGB = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16))]));
 const ON_BIT = { free: [125, 133, 144] };   // free pages: grey bits instead of near-black
-const PAGE = 4096, PX = 128, PY = 256;   // a page tile: 128 bits across, 256 rows down
+const PAGE = 4096, PX = 128, PY = 256;
+const SD_DAMAGE_SHARE = 0.02;   // background particles on the SD card that leave lasting damage   // a page tile: 128 bits across, 256 rows down
 
 // A memory chip whose top face is a memory surface.
 class Surface {
@@ -325,54 +327,70 @@ export function createBoard({ host, fc, os, particle, onStrike }) {
 
   // ---- strikes ----
   const beams = [];
-  function showBeam(point) {
+  // a beam drawn along the particle's real direction, ending where it enters the chip
+  function showBeam(point, dir, len) {
     const d = camera.position.distanceTo(point);
-    const from = point.clone().add(new THREE.Vector3(-0.35, 1, 0.55).multiplyScalar(d * 0.6));
+    len = len || d * 0.7;
+    const from = point.clone().addScaledVector(new THREE.Vector3(dir.x, dir.y, dir.z), -len);
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, point]), new THREE.LineBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
-    const glow = new THREE.Mesh(new THREE.SphereGeometry(d * 0.012, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(Math.min(d, len * 2) * 0.012, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
     line.renderOrder = glow.renderOrder = 20; glow.position.copy(point);
     scene.add(line, glow); beams.push({ line, glow, t0: performance.now() }); dirty = true;
   }
-  // a strike at a point of a surface: one bit, two neighbouring bits, or a shower of single bits around it
-  function strike(s, X, Y, kind = particle()) {
-    const { addr, bit } = s.at(X, Y);
-    const hitOne = (a, mask, quiet) => {
-      for (let k = 0; k < 8; k++) if (mask & (1 << k)) overlay.hits.set(`${s.kind}:${a}:${k}`, performance.now());
-      return s.kind === "ram" ? fc.hitRam(a, mask, { quiet }) : fc.hitSd(a, mask);
-    };
-    showBeam(s.mesh.localToWorld(s.local(X, Y)));
-    let result;
-    if (kind === "shower") {
-      // a burst of 48 single-bit upsets scattered over a few pages around the point
-      const out = {}, R = PX * 3;
-      for (let i = 0; i < 48; i++) {
-        const a = s.at(X + (Math.random() * 2 - 1) * R, Y + (Math.random() * 2 - 1) * R);
-        if (a.page >= s.pages) continue;
-        const r = hitOne(a.addr, 1 << a.bit, true); if (!r) continue;
-        const o = r.outcome || "damaged"; out[o] = (out[o] || 0) + 1;
-        if (o === "machine-check") break;
-      }
-      result = { shower: out };
-      fc.log(`Particle shower on ${s.kind === "ram" ? "RAM" : "the SD card"} near ${hexAddr(addr)}: ${Object.entries(out).map(([k, n]) => `${n} ${k}`).join(", ")}`);
-    } else {
-      const mask = kind === "2" ? (bit > 0 ? 3 << (bit - 1) : 3) : 1 << bit;
-      result = s.kind === "ram" || addr < fc.sdBytes() ? hitOne(addr, mask, false) : null;
+  const DOWN = { x: 0, y: -1, z: 0 };
+  const angleOf = (dir) => Math.round(Math.acos(Math.min(1, -dir.y)) * 180 / Math.PI);
+  // One or more particle tracks through a surface, applied as one event.
+  // kind: light | heavy | iron (one particle along dir) or flare (a burst of 48 from random directions)
+  function strike(s, X, Y, kind = particle(), dir = DOWN, { quiet = false } = {}) {
+    const tracks = [];
+    if (kind === "flare") {
+      const R = PX * 3;
+      for (let i = 0; i < 48; i++) tracks.push({ X: X + (Math.random() * 2 - 1) * R, Y: Y + (Math.random() * 2 - 1) * R, dir: randomDirection(), let: PARTICLES[randomParticle()].let * 1.5 });
+    } else tracks.push({ X, Y, dir, let: PARTICLES[kind] ? PARTICLES[kind].let : 0 });
+    const bytes = new Map(), now = performance.now();
+    let cells = 0;
+    // "bit": an idealised particle that flips exactly the one cell it is aimed at
+    const cellsOf = (t) => (kind === "bit" ? [{ X: Math.floor(t.X), Y: Math.floor(t.Y) }] : track(t.X, t.Y, t.dir, t.let));
+    for (const t of tracks) for (const c of cellsOf(t)) {
+      if (c.X < 0 || c.Y < 0 || c.X >= s.TX || c.Y >= s.TY) continue;
+      const a = s.at(c.X, c.Y); if (a.page >= s.pages) continue;
+      bytes.set(a.addr, (bytes.get(a.addr) || 0) | (1 << a.bit)); cells++;
+      overlay.hits.set(`${s.kind}:${a.addr}:${a.bit}`, now);
     }
+    const list = [...bytes].map(([addr, mask]) => (s.kind === "ram" ? { pa: addr, mask } : { index: addr, mask }));
+    const result = !list.length ? { none: true } : s.kind === "ram" ? fc.hitRamMany(list, { quiet }) : fc.hitSdMany(list, { quiet });
+    if (!quiet || overlay.level !== "none") showBeam(s.mesh.localToWorld(s.local(X, Y)), kind === "flare" ? DOWN : dir, quiet ? 2.5 : 0);
+    if (result && result.none && !quiet) fc.log(`${PARTICLES[kind] ? PARTICLES[kind].label : "burst"} at ${angleOf(dir)}° from vertical passed through without flipping anything (too little charge per cell)`);
     redrawSoon();
-    onStrike && onStrike({ surface: s.kind, addr, bit, kind, result });
+    const { addr, bit } = s.at(X, Y);
+    if (!quiet && onStrike) onStrike({ surface: s.kind, addr, bit, kind, angle: angleOf(dir), cells, result });
     return result;
   }
   const redrawSoon = () => { overlay.prev = overlay.prev && { ...overlay.prev }; overlayDue = true; };
+  // background radiation: a particle at a random point of the board, from a random direction
+  const surfaceAtWorld = (x, z) => {
+    for (const s of [ram, sd]) { const p = s.mesh.position; if (Math.abs(x - p.x) <= s.w / 2 && Math.abs(z - p.z) <= s.d / 2) return { s, X: (x - p.x + s.w / 2) / s.w * s.TX, Y: (z - p.z + s.d / 2) / s.d * s.TY }; }
+    return null;
+  };
+  function randomStrike(kind, dir) {
+    const x = (Math.random() - 0.5) * 9, z = (Math.random() - 0.5) * 6.6, hit = surfaceAtWorld(x, z);
+    if (!hit) { if (overlay.level === "none") showBeam(new THREE.Vector3(x, 0.08, z), dir, 2.5); return { surface: "board" }; }
+    // NAND flash cells hold far more charge than DRAM cells, and the card's controller has
+    // its own ECC: only a small share of the particles that reach it leave damage behind
+    if (hit.s.kind === "sd" && Math.random() > SD_DAMAGE_SHARE) { if (overlay.level === "none") showBeam(hit.s.mesh.localToWorld(hit.s.local(hit.X, hit.Y)), dir, 2.5); return { surface: "sd", harmless: true }; }
+    strike(hit.s, hit.X, hit.Y, kind, dir, { quiet: true });
+    return { surface: hit.s.kind };
+  }
 
-  // ---- input: tap/click fires, drag orbits, wheel/pinch zooms ----
+  // ---- input: tap/click fires along the line of sight, drag orbits, wheel/pinch zooms ----
   let down = null;
   const el = renderer.domElement;
   el.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
   el.addEventListener("pointerup", (e) => {
     if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6 && performance.now() - down.t < 600) {
-      const p = pickAt(e.clientX, e.clientY);
-      if (p && p.s && p.page < p.s.pages) strike(p.s, p.X, p.Y);
-      else if (p) { if (p.point) showBeam(p.point); onStrike && onStrike({ surface: p.kind, info: describe(p) }); }
+      const p = pickAt(e.clientX, e.clientY), dir = ray.ray.direction.clone();
+      if (p && p.s && p.page < p.s.pages) strike(p.s, p.X, p.Y, particle(), dir);
+      else if (p) { if (p.point) showBeam(p.point, dir); onStrike && onStrike({ surface: p.kind, info: describe(p) }); }
     }
     down = null;
   });
@@ -407,8 +425,9 @@ export function createBoard({ host, fc, os, particle, onStrike }) {
       const r = el.getBoundingClientRect(); const p = pickAt(r.left + r.width / 2, r.top + r.height / 2);
       return p && p.s ? describe(p) : "";
     },
-    // for tests: fire at an address (RAM or SD) and bit
-    strikeAt(kind, addr, bit = 0, particleKind = "1") { const s = kind === "sd" ? sd : ram, { X, Y } = s.xy(addr, bit); return strike(s, X, Y, particleKind); },
+    // for tests: fire at an address (RAM or SD) and bit; dir in chip axes, default straight down
+    strikeAt(kind, addr, bit = 0, particleKind = "bit", dir = DOWN) { const s = kind === "sd" ? sd : ram, { X, Y } = s.xy(addr, bit); return strike(s, X, Y, particleKind, dir); },
+    randomStrike,
     onMap: () => drawBase(ram), onSd: refreshSd, redraw,
     _debug: () => { const r = overlay.region; return r && { kind: r.s.kind, X0: r.X0, Y0: r.Y0, X1: r.X1, Y1: r.Y1, level: overlay.level, canvas: [overlay.canvas.width, overlay.canvas.height], start: r.s.at(r.X0, r.Y0), dist: camera.position.distanceTo(controls.target), png: overlay.canvas.toDataURL() }; },
   };

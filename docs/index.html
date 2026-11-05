@@ -57,6 +57,11 @@
   .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:6px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:13px; font-variant-numeric:tabular-nums; }
   .facts .k { display:block; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
   .facts .calc { grid-column:1 / -1; }
+  .survival { grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); }
+  .subhead { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--fg); margin:12px 0 6px; font-weight:600; }
+  .subhead .dim { text-transform:none; letter-spacing:0; font-weight:400; }
+  .bgrow { flex-basis:100%; }
+  select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; font:inherit; max-width:100%; }
   .facts button { padding:2px 8px; margin:4px 4px 0 0; font-size:12px; }
   .facts button.hit { border-color:var(--bad); color:var(--bad); }
 
@@ -101,10 +106,16 @@
     <button id="t-tmr" class="toggle" aria-pressed="true" disabled>Software TMR <b>ON</b></button>
   </div>
   <div class="group"><span class="lbl">Particle</span>
-    <div class="seg" id="particle"><button data-p="1" aria-pressed="true">1 bit</button><button data-p="2">2 bits</button><button data-p="shower">shower</button></div>
+    <div class="seg" id="particle"><button data-p="bit" title="Flips exactly the cell you aim at">single bit</button><button data-p="light" title="Flips a cell only when it comes in steeply">light ion</button><button data-p="heavy" aria-pressed="true" title="Flips a line of cells at low angles">heavy ion</button><button data-p="flare" title="48 particles at once, from random directions">flare burst</button></div>
   </div>
   <span class="spacer"></span>
   <div class="group"><button id="power">Power cycle</button><button id="restore">Restore SD card</button></div>
+  <div class="group bgrow"><span class="lbl">Background radiation</span>
+    <button id="bg-on" class="toggle" aria-pressed="false">Background <b>OFF</b></button>
+    <select id="bg-env" aria-label="Environment"></select>
+    <select id="bg-warp" aria-label="Time warp"></select>
+    <button id="bg-reset">Reset stats</button>
+  </div>
 </div>
 
 <div class="layout">
@@ -118,11 +129,13 @@
       <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core, heap, stacks</span>
       <span><i style="background:#2ea043"></i>cFS apps</span><span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies 1–3</span>
       <span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#3b4048"></i>other processes</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
-      <span><i style="background:#ff3cc8"></i>flipped cell ECC is hiding / damaged SD byte</span><span><i style="background:#e3b341"></i>bit just changed</span>
+      <span><i style="background:#ff3cc8"></i>flipped cell ECC is hiding / damaged SD byte</span><span><i style="background:#e3b341"></i>bit just changed</span><span><i style="background:#f85149"></i>just hit</span>
     </div>
-    <p class="hint-line">Drag to rotate · scroll or pinch to zoom (keep going: pages, bytes, then bits) · click or tap a chip to fire</p>
+    <p class="hint-line">Drag to rotate · scroll or pinch to zoom (keep going: pages, bytes, then bits) · click or tap a chip to fire: the particle flies along your line of sight, so tilt the board for a low-angle hit</p>
     <p id="beamlog" aria-live="polite"></p>
     <div class="facts" id="facts"></div>
+    <h3 class="subhead">Survival under background radiation <span class="dim">(radiation is time-warped; the software runs in real time)</span></h3>
+    <div class="facts survival" id="survival"></div>
   </section>
   <aside class="side" id="missions" aria-label="Missions"></aside>
 </div>
@@ -138,9 +151,9 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110501";
+window.BUILD = "2026110502";
 (() => {
-  const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "missions", "os/linux-cfs"];
+  const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "missions", "radiation", "os/linux-cfs"];
   const map = { imports: { three: "./vendor/three.module.min.js" + v } };
   map.imports[new URL("vendor/OrbitControls.js", location.href).href] = "./vendor/OrbitControls.js" + v;
   for (const m of mods) map.imports[new URL(`js/${m}.js`, location.href).href] = `./js/${m}.js${v}`;
