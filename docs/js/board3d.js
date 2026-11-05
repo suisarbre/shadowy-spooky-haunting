@@ -499,22 +499,30 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     zoomInput.addEventListener("input", () => { const d = fromSlider(zoomInput.value / 1000), dir = camera.position.clone().sub(controls.target).normalize(); camera.position.copy(controls.target).addScaledVector(dir, d); controls.autoRotate = false; moved = true; overlayDue = true; dirty = true; });
   }
   addEventListener("resize", placeTicks); setTimeout(placeTicks, 0);
-  // magnet: once inside the satellite, pull the view onto the nearer memory chip and keep it over it
+  // magnet: once inside the satellite, pull the view onto a memory chip, then leave it where you put it.
+  //  - the middle of the screen is over a chip: stay exactly there
+  //  - it has slipped off a chip: ease back just inside the nearest edge
+  //  - no chip in view yet (coming in from outside): head for the nearer chip
   function magnet(d) {
-    // deep in (bytes and bits) the view is yours: roam freely
     if (flight || d > 1.0 || d < 0.03) return;
     ndc.set(0, 0); ray.setFromCamera(ndc, camera);
-    // the chip under the middle of the screen, else the one nearest to the line of sight
-    let s = null;
     const under = ray.intersectObjects([ram.mesh, sd.mesh], false)[0];
-    if (under) s = under.object.userData.surface;
-    else { let bestD = Infinity; for (const x of [ram, sd]) { const dd = ray.ray.distanceSqToPoint(x.mesh.localToWorld(new THREE.Vector3(0, x.h / 2, 0))); if (dd < bestD) { bestD = dd; s = x; } } }
-    const l = s.mesh.worldToLocal(controls.target.clone()), m = 0.46;
-    const cx = Math.max(-s.w * m, Math.min(s.w * m, l.x)), cz = Math.max(-s.d * m, Math.min(s.d * m, l.z));
-    // on the way in: head for the chip's middle; close in: only stay on the chip, so you can roam over it
-    const toward = smooth(0.08, 0.2, d);
-    const goal = s.mesh.localToWorld(new THREE.Vector3(cx * (1 - toward), s.h / 2, cz * (1 - toward)));
-    const shift = goal.sub(controls.target).multiplyScalar((1 - smooth(0.3, 1.0, d)) * 0.2);
+    if (under && under.face && under.face.normal.y > 0.5) {
+      // settle the pivot onto the chip surface along the line of sight: the picture does not move,
+      // but turning, panning and zooming now happen about the memory you are looking at
+      controls.target.lerp(under.point, 0.18);
+      return;
+    }
+    let s = null, bestD = Infinity;
+    for (const x of [ram, sd]) { const dd = ray.ray.distanceSqToPoint(x.mesh.localToWorld(new THREE.Vector3(0, x.h / 2, 0))); if (dd < bestD) { bestD = dd; s = x; } }
+    const l = s.mesh.worldToLocal(controls.target.clone()), m = 0.47;
+    const inX = Math.abs(l.x) <= s.w / 2 && Math.abs(l.z) <= s.d / 2;
+    // far off the chip: go for its middle; just off an edge: step back over the edge
+    const far = Math.abs(l.x) > s.w || Math.abs(l.z) > s.d;
+    const gx = far ? 0 : Math.max(-s.w * m, Math.min(s.w * m, l.x)), gz = far ? 0 : Math.max(-s.d * m, Math.min(s.d * m, l.z));
+    if (inX && !far && Math.abs(l.y - s.h / 2) < s.h) return;
+    const goal = s.mesh.localToWorld(new THREE.Vector3(gx, s.h / 2, gz));
+    const shift = goal.sub(controls.target).multiplyScalar((1 - smooth(0.3, 1.0, d)) * 0.18);
     controls.target.add(shift); camera.position.add(shift);
   }
   // up close, look down onto the board: tilting stays possible, up to about 50° from vertical
@@ -581,6 +589,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     strikeAt(kind, addr, bit = 0, particleKind = "bit", dir = DOWN) { const s = kind === "sd" ? sd : ram, { X, Y } = s.xy(addr, bit); return strike(s, X, Y, particleKind, dir); },
     randomStrike,
     onMap: () => drawBase(ram), onSd: refreshSd, redraw,
+    _cam: () => ({ t: controls.target.toArray().map((v) => +v.toFixed(5)), c: camera.position.toArray().map((v) => +v.toFixed(5)), auto: controls.autoRotate, sat: [sat.rotation.x, sat.rotation.z].map((v) => +v.toFixed(4)) }),
     _debug: () => { const r = overlay.region; return r && { kind: r.s.kind, X0: r.X0, Y0: r.Y0, X1: r.X1, Y1: r.Y1, level: overlay.level, canvas: [overlay.canvas.width, overlay.canvas.height], start: r.s.at(r.X0, r.Y0), dist: camera.position.distanceTo(controls.target), png: overlay.canvas.toDataURL() }; },
   };
 }
