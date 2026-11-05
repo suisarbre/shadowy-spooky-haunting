@@ -3,1075 +3,152 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SpaceY cFS in v86</title>
+<title>Radiation Lab: cFS</title>
 <style>
-  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#d6dde6; --dim:#7d8896; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; color-scheme: dark; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; padding-block:16px; padding-left:max(16px, env(safe-area-inset-left,0px)); padding-right:max(16px, env(safe-area-inset-right,0px)); }
-  h1 { font-size:18px; margin:0 0 4px; }
-  h2.sec { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:16px 0 6px; }
-  p.sub { color:var(--dim); margin:0 0 12px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#d6dde6; --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --pink:#ff7ad9; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; padding:16px max(16px, env(safe-area-inset-right,0px)) 32px max(16px, env(safe-area-inset-left,0px)); }
+  h1 { font-size:20px; margin:0 0 2px; letter-spacing:-.01em; }
+  .sub { color:var(--dim); margin:0 0 12px; max-width:80ch; }
+  .dim { color:var(--dim); }
   button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--acc); }
-  button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
-  button:disabled { opacity:.5; cursor:default; }
-  button[aria-pressed="true"] { border-color:var(--ok); color:var(--ok); }
-  label { color:var(--dim); }
-  select, input { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; font:inherit; min-width:0; }
-  #st-off { width:7.5em; } #st-file { max-width:100%; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:10px; margin-bottom:10px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; min-width:0; font-size:13px; }
-  .card.target { border-color:var(--acc); }
-  .card h3 { margin:0 0 4px; font-size:14px; display:flex; justify-content:space-between; gap:8px; }
-  .card .k { color:var(--dim); }
-  .card div { font-variant-numeric:tabular-nums; }
-  .pill { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; }
-  .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; min-width:0; }
-  .box h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
-  pre { margin:0; height:300px; overflow:auto; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-all; }
-  #status { font-weight:600; }
-  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-  #voter[hidden] { display:none; }
-  .view3d { position:relative; height:clamp(260px, 68vw, 480px); border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#06080c; touch-action:none; margin-bottom:8px; }
-  .view3d canvas { display:block; width:100%; height:100%; cursor:crosshair; }
-  .hover { position:absolute; left:8px; top:8px; right:8px; pointer-events:none; background:rgba(13,17,23,.88); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; color:var(--fg); }
-  .hover:empty { display:none; }
-  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--dim); }
-  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
-  #beamlog { font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; color:var(--fg); min-height:1.4em; word-break:break-word; }
-  .scope { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; min-width:0; }
-  .scope-head { font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; color:var(--dim); margin:6px 0; word-break:break-word; }
-  .bits { overflow-x:auto; font:12px/1 ui-monospace, Menlo, Consolas, monospace; }
-  .brow { display:flex; align-items:center; gap:8px; padding:2px 0; white-space:nowrap; }
-  .brow .addr { color:var(--dim); width:7.6em; flex:none; }
-  .brow .addr.lbl { width:auto; min-width:7.6em; }
-  .brow .val { color:var(--dim); flex:none; }
-  .byte { display:inline-flex; gap:1px; margin-right:5px; }
-  .bit { width:11px; height:17px; display:inline-flex; align-items:center; justify-content:center; border-radius:2px; background:#0d1117; color:#6e7681; cursor:pointer; user-select:none; transition:background .6s, color .6s; }
-  .bit.one { background:#1f6feb; color:#e6edf3; }
-  .bit.chg { background:#e3b341; color:#0d1117; transition:none; }
-  .bit.hit { outline:2px solid var(--bad); outline-offset:-1px; }
-  .bit:hover { outline:1px solid var(--acc); }
-  .brow.sep { border-top:1px solid var(--line); margin-top:4px; padding-top:6px; }
-  @media (max-width: 520px) {
-    .bits { font-size:10px; }
-    .brow { gap:5px; }
-    .brow .addr { width:6.4em; }
-    .brow .addr.lbl { min-width:6.4em; }
-    .byte { gap:0; margin-right:3px; }
-    .bit { width:8px; height:16px; box-sizing:border-box; border-right:1px solid var(--panel); border-radius:0; }
+  button:focus-visible, summary:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  button:disabled { opacity:.45; cursor:default; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .pink { color:var(--pink); }
+
+  /* control bar */
+  .bar { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:12px; position:sticky; top:0; z-index:5; }
+  .status { font-weight:650; min-width:12ch; }
+  .status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--dim); margin-right:7px; vertical-align:1px; }
+  .status.ok::before { background:var(--ok); } .status.warn::before { background:var(--warn); } .status.bad::before { background:var(--bad); }
+  .group { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .group > .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  .toggle b { font-weight:650; color:var(--dim); }
+  .toggle[aria-pressed="true"] { border-color:var(--ok); } .toggle[aria-pressed="true"] b { color:var(--ok); }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; border-right:1px solid var(--line); }
+  .seg button:last-child { border-right:0; }
+  .seg button[aria-pressed="true"] { background:#1f2a37; color:#fff; box-shadow: inset 0 -2px 0 var(--acc); }
+  .spacer { flex:1; }
+  @media (max-width: 600px) {
+    .bar { position:static; gap:6px 10px; padding:8px 10px; }
+    .bar .status { flex-basis:100%; }
+    .bar button { padding:5px 8px; }
   }
-  .calc { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:10px; }
-  .calc div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-variant-numeric:tabular-nums; }
-  .calc .k { display:block; color:var(--dim); font-size:12px; }
-  .calc b { font-size:16px; }
-  .calc .hit { border-color:var(--bad); }
+
+  /* main layout: board on the left, missions on the right */
+  .layout { display:grid; grid-template-columns:minmax(0, 1fr) 360px; gap:12px; align-items:start; }
+  @media (max-width: 960px) { .layout { grid-template-columns:minmax(0, 1fr); } }
+  .view3d { position:relative; height:clamp(320px, 62vh, 760px); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#06080c; touch-action:none; }
+  @media (max-width: 600px) { .view3d { height:clamp(300px, 78vw, 460px); } }
+  .view3d canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+  .hud { position:absolute; pointer-events:none; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  .hud.where { left:8px; top:8px; right:8px; background:rgba(13,17,23,.9); border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
+  .hud.where:empty { display:none; }
+  .hud.level { left:8px; bottom:8px; color:var(--dim); background:rgba(13,17,23,.75); border-radius:6px; padding:3px 8px; }
+  .hud.zoom { right:8px; bottom:8px; pointer-events:auto; display:flex; gap:4px; }
+  .hud.zoom button { width:34px; height:34px; padding:0; font-size:16px; background:rgba(22,27,34,.92); }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--dim); margin:8px 0 4px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  .hint-line { font-size:12px; color:var(--dim); margin:0 0 6px; }
+  #beamlog { font:12px/1.45 ui-monospace, Menlo, Consolas, monospace; min-height:1.45em; word-break:break-word; margin:6px 0 10px; }
+  button.link { background:none; border:0; color:var(--acc); padding:0; text-decoration:underline; font:inherit; }
+  .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:6px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:13px; font-variant-numeric:tabular-nums; }
+  .facts .k { display:block; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  .facts .calc { grid-column:1 / -1; }
+  .facts button { padding:2px 8px; margin:4px 4px 0 0; font-size:12px; }
+  .facts button.hit { border-color:var(--bad); color:var(--bad); }
+
+  /* missions */
+  .side { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .side h2 { font-size:15px; margin:0 0 2px; }
+  .side > p { margin:0 0 10px; font-size:13px; }
+  .mission { border-top:1px solid var(--line); }
+  .mhead { width:100%; display:flex; justify-content:space-between; gap:8px; background:none; border:0; border-radius:0; padding:10px 2px; text-align:left; font-weight:600; }
+  .mstate { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
+  .mission.complete .mstate { color:var(--ok); }
+  .mbody { padding:0 2px 12px; font-size:13px; }
+  .mbody p { margin:0 0 8px; }
+  .mbody .setup { width:100%; text-align:left; margin-bottom:8px; border-color:var(--acc); }
+  .mbody .row { display:flex; gap:6px; align-items:center; margin-bottom:8px; color:var(--dim); }
+  .goals { list-style:none; margin:0 0 8px; padding:0; }
+  .goals li { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
+  .goals .box { flex:none; width:16px; height:16px; border:1.5px solid var(--dim); border-radius:4px; font-size:11px; line-height:13px; text-align:center; margin-top:2px; }
+  .goals li.met { color:var(--dim); } .goals li.met .box { background:var(--ok); border-color:var(--ok); color:#0d1117; }
+  .goals li.opt { font-style:italic; }
+  details summary { cursor:pointer; color:var(--acc); font-size:13px; padding:2px 0; }
+  details p { color:var(--fg); margin:4px 0 6px; }
+  .reset-progress { margin-top:10px; font-size:12px; color:var(--dim); }
+
+  /* logs */
+  .logs { margin-top:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .logs h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
+  pre { margin:0; max-height:260px; overflow:auto; font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
+  .logs details { margin-top:8px; }
+  footer { color:var(--dim); font-size:12px; margin-top:14px; max-width:90ch; }
 </style>
 </head>
 <body>
-<h1>NASA cFS running in the browser</h1>
-<p class="sub">Each flight computer follows the ISISPACE iOBC CubeSat profile (64 MB SDRAM, 512 KB FRAM, SD card, hardware watchdog), emulated by v86 as a 32-bit PC running Linux and NASA cFS. In TMR mode three computers run side by side and a voter outside them masks a computer that disagrees, then resyncs it from a healthy one.</p>
-<p>Status: <span id="status">loading…</span></p>
+<h1>Radiation vs. a CubeSat flight computer</h1>
+<p class="sub">NASA cFS on Linux, running live in your browser on an emulated ISISPACE iOBC-class board (64 MB SDRAM, SD card, FRAM, watchdog). Fire particles at the chips, then zoom in until you can see, and flip, single bits.</p>
 
-<div class="row">
-  <label for="mode">Configuration</label>
-  <select id="mode">
-    <option value="single">1 computer: ECC + watchdog + reboot</option>
-    <option value="tmr">3 computers: TMR with voter</option>
-  </select>
-  <button id="wd-jumper" aria-pressed="true">Watchdogs: ON</button>
-  <button id="f-ecc" disabled aria-pressed="false">ECC: OFF</button>
-</div>
-
-<h2 class="sec">Flight computer hardware: drag to rotate, scroll or pinch to zoom, click or tap a chip to fire</h2>
-<div class="view3d" id="view3d"><div class="hover" id="hover"></div></div>
-<div class="row">
-  <label for="beam">Particle</label>
-  <select id="beam">
-    <option value="1">1 bit (single-event upset)</option>
-    <option value="2">2 adjacent bits (multi-bit upset)</option>
-  </select>
-  <div class="legend" aria-label="Memory map colours">
-    <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS executable, heap, stacks</span>
-    <span><i style="background:#2ea043"></i>cFS apps and libraries</span><span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies 1, 2, 3</span>
-    <span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#3b4048"></i>other processes</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
-    <span><i style="background:#f85149"></i>damaged SD card</span>
+<div class="bar" role="toolbar" aria-label="Controls">
+  <span id="status" class="status" aria-live="polite">loading…</span>
+  <div class="group"><span class="lbl">Protection</span>
+    <button id="t-ecc" class="toggle" aria-pressed="false">ECC <b>OFF</b></button>
+    <button id="t-wd" class="toggle" aria-pressed="true">Watchdog <b>ON</b></button>
+    <button id="t-tmr" class="toggle" aria-pressed="true" disabled>Software TMR <b>ON</b></button>
   </div>
-</div>
-<p id="beamlog"></p>
-<div class="scope" aria-label="Memory microscope">
-  <div class="row" style="margin-bottom:4px">
-    <b>Microscope</b>
-    <button id="sc-tmr">TMR calculator copies</button>
-    <button id="sc-last" disabled>Last hit</button>
-    <button id="sc-prev">◀ 64 bytes</button>
-    <button id="sc-next">64 bytes ▶</button>
+  <div class="group"><span class="lbl">Particle</span>
+    <div class="seg" id="particle"><button data-p="1" aria-pressed="true">1 bit</button><button data-p="2">2 bits</button><button data-p="shower">shower</button></div>
   </div>
-  <div class="scope-head" id="sc-head">Click a chip in the 3D view, or pick a view above. Click any bit to flip it.</div>
-  <div class="bits" id="sc-bits"></div>
-</div>
-<div class="cards" id="cards"></div>
-<p class="sub" id="voter" hidden></p>
-
-<h2 class="sec">Ground commands (sent to every computer)</h2>
-<div class="row">
-  <button id="b-noop" disabled>ES No-op</button>
-  <button id="b-restart" disabled>Restart SAMPLE_APP</button>
-  <button id="b-sample-noop" disabled>SAMPLE_APP No-op</button>
+  <span class="spacer"></span>
+  <div class="group"><button id="power">Power cycle</button><button id="restore">Restore SD card</button></div>
 </div>
 
-<h2 class="sec">Radiation and faults: target <select id="target" aria-label="Target computer"></select></h2>
-<div class="row">
-  <button id="f-query" disabled>Map SAMPLE_APP memory</button>
-  <button id="f-counter" disabled>Hit SAMPLE_APP counter (1 bit)</button>
-  <button id="f-counter2" disabled>Hit SAMPLE_APP counter (2 bits)</button>
-  <button id="f-data" disabled>8 random data hits</button>
-  <button id="f-code" disabled>40 random code hits</button>
-  <button id="b-kill" disabled>Kill flight software</button>
-  <button id="b-start" disabled>Start flight software</button>
-</div>
-<div class="row" aria-label="Boot storage">
-  <label for="st-file">SD card file</label>
-  <select id="st-file" disabled><option>loading…</option></select>
-  <label for="st-off">offset</label>
-  <input id="st-off" type="number" min="0" value="0" inputmode="numeric">
-  <label for="st-bit">bit</label>
-  <select id="st-bit"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select>
-  <button id="st-hit" disabled>Hit storage</button>
-  <button id="st-restore" disabled>Restore storage</button>
-  <button id="st-cycle" disabled>Power cycle</button>
+<div class="layout">
+  <section aria-label="Flight computer">
+    <div class="view3d" id="view3d">
+      <div class="hud where" id="where"></div>
+      <div class="hud level">zoom: <span id="zoomlevel">board</span></div>
+      <div class="hud zoom"><button id="z-home" title="Whole board" aria-label="Whole board">⌂</button><button id="z-out" title="Zoom out" aria-label="Zoom out">−</button><button id="z-in" title="Zoom in" aria-label="Zoom in">+</button></div>
+    </div>
+    <div class="legend" aria-label="Memory colours">
+      <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core, heap, stacks</span>
+      <span><i style="background:#2ea043"></i>cFS apps</span><span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies 1–3</span>
+      <span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#3b4048"></i>other processes</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
+      <span><i style="background:#ff3cc8"></i>flipped cell ECC is hiding / damaged SD byte</span><span><i style="background:#e3b341"></i>bit just changed</span>
+    </div>
+    <p class="hint-line">Drag to rotate · scroll or pinch to zoom (keep going: pages, bytes, then bits) · click or tap a chip to fire</p>
+    <p id="beamlog" aria-live="polite"></p>
+    <div class="facts" id="facts"></div>
+  </section>
+  <aside class="side" id="missions" aria-label="Missions"></aside>
 </div>
 
-<h2 class="sec">Software TMR calculator on <span class="tname">A</span></h2>
-<p class="sub">TMR_CALC adds 1, 2, 3, … once a second, so the sum must be step × (step + 1) / 2. Its state is kept and computed in three memory partitions and voted every second. Keep ECC off to see TMR do the work.</p>
-<div class="calc" id="calc"></div>
-<div class="row">
-  <button id="c-tmr" disabled aria-pressed="true">Software TMR: ON</button>
-  <button id="c-hit1" disabled>Hit copy 1</button>
-  <button id="c-hit2" disabled>Hit copy 2</button>
-  <button id="c-hit3" disabled>Hit copy 3</button>
-  <button id="c-hit12" disabled>Hit copies 1 and 2 (same bit)</button>
-  <button id="c-reset" disabled>Reset calculator</button>
-</div>
+<section class="logs" aria-label="Logs">
+  <h2>Event log</h2>
+  <pre id="evt"></pre>
+  <details id="con-box"><summary>Console (ttyS0)</summary><pre id="con"></pre></details>
+  <details id="tlm-box"><summary>Telemetry packets by message ID</summary><pre id="tlm"></pre></details>
+</section>
+<footer>The emulator is v86 (a 32-bit PC), so the CPU is x86 rather than the iOBC's ARM9; memory, storage, FRAM and watchdog behave like the real parts. Source and notes: <a href="https://github.com/suisarbre/shadowy-spooky-haunting" style="color:var(--acc)">github.com/suisarbre/shadowy-spooky-haunting</a>.</footer>
 
-<div class="grid">
-  <div class="box"><h2>Console of <span class="tname">A</span> (ttyS0)</h2><pre id="con"></pre></div>
-  <div class="box"><h2>Events: <span class="tname">A</span> + ground</h2><pre id="evt"></pre></div>
-  <div class="box"><h2>Telemetry of <span class="tname">A</span> by message ID</h2><pre id="tlm"></pre></div>
-</div>
-
-<script src="libv86.js?v=2026103007"></script>
 <script>
-"use strict";
-const $ = (id) => document.getElementById(id);
-// Bump BUILD whenever the VM images change, so browsers never mix a cached old
-// image with a new page (GitHub Pages lets browsers cache files for 10 minutes).
-const BUILD = "2026103007";
-const BOOT_WINDOW_MS = 30000;   // watchdogs run from power-on; flight software must check in within this
-const SILENCE_MS = 6000;        // telemetry gap that counts as "computer down"
-const DISAGREE_MS = 12000;      // how long a computer may disagree before the voter acts (HK reports are a few s apart)
-const RESYNC_AFTER_DOWN_MS = 2000; // after telemetry loss, so the voter resyncs before the 10 s watchdog would reboot
-const NAMES = ["A", "B", "C"];
-
-// ---------------------------------------------------------------------------
-// Assets shared by every computer: firmware plus the launch image of the boot
-// storage (kernel + uncompressed root filesystem). Each computer gets its own
-// copy of the storage, which radiation can then damage independently.
-// ---------------------------------------------------------------------------
-const assets = { bios: null, vga: null, kernel: null, fs: null, files: [] };
-
-async function loadAssets() {
-  const get = async (u) => { const r = await fetch(`${u}?v=${BUILD}`); if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return r; };
-  const [bios, vga, bz, rd] = await Promise.all(["bios.bin", "vgabios.bin", "bzImage", "initrd.gz"].map(get));
-  assets.bios = await bios.arrayBuffer(); assets.vga = await vga.arrayBuffer();
-  assets.kernel = new Uint8Array(await bz.arrayBuffer());
-  assets.fs = new Uint8Array(await new Response(rd.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-  assets.files = parseCpio(assets.fs);
-  MEM_MB = MEM_MB_BASE + Math.ceil(assets.fs.length / 1048576) + 1; RAM_PAGES = MEM_MB * 256;
-  $("st-file").innerHTML = [`<option value="kernel">kernel (bzImage, ${assets.kernel.length} bytes)</option>`]
-    .concat(assets.files.map((f) => `<option value="${f.name}">${f.name} (${f.size} bytes)</option>`)).join("");
-  $("st-file").value = "cfs/cpu1/core-cpu1";
-}
-
-// newc cpio: 110-byte ASCII header, name, data; name and data padded to 4 bytes
-function parseCpio(u8) {
-  const out = []; let off = 0; const td = new TextDecoder();
-  const hexAt = (o) => parseInt(td.decode(u8.subarray(o, o + 8)), 16);
-  while (off + 110 <= u8.length && td.decode(u8.subarray(off, off + 6)) === "070701") {
-    const mode = hexAt(off + 14), size = hexAt(off + 54), nameSize = hexAt(off + 94);
-    const name = td.decode(u8.subarray(off + 110, off + 110 + nameSize - 1));
-    const dataOff = (off + 110 + nameSize + 3) & ~3;
-    if (name === "TRAILER!!!") break;
-    if ((mode & 0o170000) === 0o100000 && size > 0) out.push({ name, dataOff, size });
-    off = (dataOff + size + 3) & ~3;
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-// ---------------------------------------------------------------------------
-// Event log: ground/voter entries plus each computer's own cFS events
-// ---------------------------------------------------------------------------
-const groundLog = [];
-function logGround(line) { groundLog.push({ t: Date.now(), line }); renderEvents(); }
-
-// ---------------------------------------------------------------------------
-// CCSDS command packets (little-endian payloads)
-// ---------------------------------------------------------------------------
-function cmdPacket(mid, fc, payload = new Uint8Array(0)) {
-  const p = new Uint8Array(8 + payload.length);
-  p[0] = mid >> 8; p[1] = mid & 255; p[2] = 0xc0; p[3] = 0; const len = p.length - 7; p[4] = len >> 8; p[5] = len & 255;
-  p[6] = fc; p.set(payload, 8);
-  let x = 0xff; for (const v of p) x ^= v; p[7] = x;
-  return p;
-}
-const str = (t, n) => { const o = new Uint8Array(n); for (let i = 0; i < t.length && i < n; i++) o[i] = t.charCodeAt(i); return o; };
-const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
-const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
-const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
-const REG = { code: 0, rodata: 1, data: 2, bss: 3 };
-const CMD = {
-  toEnable: () => cmdPacket(0x1880, 6, str("127.0.0.1", 16)),
-  esNoop: () => cmdPacket(0x1806, 0),
-  restartSample: () => cmdPacket(0x1806, 6, str("SAMPLE_APP", 20)),
-  sampleNoop: () => cmdPacket(0x1882, 0),
-  fiQuery: (app) => cmdPacket(0x18c0, 2, str(app, 20)),
-  fiRandom: (app, region, count, seed) => cmdPacket(0x18c0, 4, cat(str(app, 20), new Uint8Array([REG[region], 0]), u16(count), u32(seed))),
-  fiSymbol: (app, sym, off, mask) => cmdPacket(0x18c0, 5, cat(str(app, 20), str(sym, 32), u32(off), new Uint8Array([mask, 0, 0, 0]))),
-  setEcc: (on) => cmdPacket(0x18c0, 6, new Uint8Array([on ? 1 : 0, 0, 0, 0])),
-  // one copy of a TMR region: name, copy 0..2, bit mask, offset (byte 4 = low byte of the sum)
-  fiTmr: (copy, off, mask) => cmdPacket(0x18c0, 7, cat(str("CALC", 20), new Uint8Array([copy, mask]), u16(0), u32(off))),
-  calcReset: () => cmdPacket(0x18c1, 1),
-  calcTmr: (on) => cmdPacket(0x18c1, 2, new Uint8Array([on ? 1 : 0, 0, 0, 0])),
-};
-
-// ---------------------------------------------------------------------------
-// One flight computer: a v86 PC with three serial lines
-//   ttyS0 console, ttyS1 radio link (hex-framed CCSDS), ttyS2 bus to its watchdog chip
-// ---------------------------------------------------------------------------
-let watchdogsOn = true;
-
-class FlightComputer {
-  constructor(name) {
-    this.name = name;
-    this.kernel = assets.kernel.slice(); this.fs = assets.fs.slice(); this.diffs = new Map();
-    // FRAM (512 KB on the iOBC): non-volatile and immune to single-event upsets, so it keeps
-    // the boot record across power cycles and radiation. The boot loader updates it.
-    this.boots = 0; this.failedStreak = 0; this.wdResets = 0; this.resyncs = 0; this.lastReset = "first power-on";
-    this.events = []; this.tlmCounts = new Map();
-    this.v = { ctr: null, flips: 0, ecc: false, eccC: 0, eccU: 0 };
-    this.calc = null;   // latest TMR_CALC report
-    this.hw = { corrected: 0, uncorrectable: 0, hits: 0 };   // hardware (memory controller) ECC, for physical hits
-    this.emu = null; this.disagreeSince = 0; this.downSince = 0; this.busy = false;
-    this.powerOn();
-  }
-
-  // ---- power ----
-  powerOn() {
-    Object.assign(this, { con: "", s1: "", s2: "", s3: "", mapBuf: null, map: null, started: false, operational: false, probing: false, lastTlm: 0,
-      reachedOperational: false, autostartSeen: false, bootTimer: null, exitSeen: false, panicSeen: false });
-    // Like real watchdog chips, this one runs from the moment power comes on.
-    this.wd = { enabled: watchdogsOn, timeoutMs: BOOT_WINDOW_MS, lastKick: Date.now(), byHs: false };
-    this.boots++;
-    this.setStatus(this.failedStreak >= 2 ? `<span class="bad">BOOT LOOP (${this.failedStreak} failed)</span>` : `booting (boot #${this.boots})…`);
-    this.emu = new V86({
-      wasm_path: `v86.wasm?v=${BUILD}`,
-      bios: { buffer: assets.bios.slice(0) }, vga_bios: { buffer: assets.vga.slice(0) },
-      bzimage: { buffer: this.kernel.slice().buffer },   // boot from storage as it is now, damage included
-      initrd: { buffer: this.fs.slice().buffer },
-      cmdline: "console=ttyS0 rdinit=/init quiet loglevel=3 fsw=auto",
-      memory_size: MEM_MB * 1024 * 1024,
-      uart1: true, uart2: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
-    });
-    this.emu.add_listener("serial0-output-byte", (b) => this.onConsole(b));
-    this.emu.add_listener("serial1-output-byte", (b) => this.onRadio(b));
-    this.emu.add_listener("serial2-output-byte", (b) => this.onWatchdogBus(b));
-    this.emu.add_listener("serial3-output-byte", (b) => this.onDiag(b));   // ttyS3: diagnostic port (memory map)
-    render();
-  }
-  async powerCycle(reason = "power cycle") {
-    this.lastReset = reason;
-    const old = this.emu; this.emu = null; clearTimeout(this.bootTimer);
-    try { await old.destroy(); } catch (e) { /* already gone */ }
-    this.powerOn();
-  }
-  async shutdown() { const old = this.emu; this.emu = null; clearTimeout(this.bootTimer); try { await old.destroy(); } catch (e) {} }
-
-  sh(cmd) { if (this.emu) this.emu.serial0_send(cmd + "\n"); }
-  send(p) { if (this.emu) this.emu.serial_send_bytes(1, new TextEncoder().encode("C" + [...p].map((v) => v.toString(16).padStart(2, "0")).join("") + "\n")); }
-  startFsw() {
-    this.con = ""; this.started = true; this.operational = false; this.probing = false; this.exitSeen = false;
-    this.setStatus("starting flight software…");
-    this.sh("cd /cfs/cpu1 && { ./core-cpu1 2>&1; echo \"FSW-EXI\"\"T $?\"; } | grep -E 'OPERATIONA[L]|ERRO[R]|Restar[t]|FSW-EXI[T]|Could not loa[d]' &");
-  }
-  setStatus(html) { this.statusHtml = html; render(); }
-  log(line) { this.events.push({ t: Date.now(), line: `[${this.name}] ${line}` }); if (this.events.length > 300) this.events.splice(0, 100); if (this === target()) renderEvents(); }
-
-  // ---- console (ttyS0) ----
-  onConsole(byte) {
-    this.con += String.fromCharCode(byte);
-    if (this.con.length > 20000) this.con = this.con.slice(-15000);
-    if (this === target()) { $("con").textContent = this.con; $("con").scrollTop = 1e9; }
-    const tail = this.con.slice(-300);
-    if (!this.autostartSeen && /FSW-AUTOSTART/.test(tail)) { this.autostartSeen = true; this.started = true; this.setStatus("starting flight software…"); }
-    if (/VM-READY/.test(tail) && !this.started && !this.autostartSeen && !this.bootTimer) {
-      // an image without autostart boots to a plain shell: start cFS from here instead
-      this.bootTimer = setTimeout(() => { if (!this.started && !this.autostartSeen && this.emu) this.startFsw(); }, 4000);
-    }
-    if (/entering OPERATIONAL/.test(tail) && this.started && !this.operational) {
-      this.operational = true; this.reachedOperational = true; this.failedStreak = 0; this.lastTlm = Date.now();
-      this.setStatus('<span class="ok">OPERATIONAL</span>');
-      this.send(CMD.toEnable());   // turn on the downlink
-      this.send(CMD.setEcc(eccWanted));
-      setTimeout(() => this.requestMap(), 1500);
-    }
-    const exit = tail.match(/FSW-EXIT (\d+)/);
-    if (exit && !this.exitSeen) {
-      this.exitSeen = true; this.started = false; this.operational = false; this.probing = false;
-      const why = /exec format|not found|can't execute|syntax error/i.test(this.con.slice(-1500)) ? "could not start (corrupted file?)" : `exited (code ${exit[1]})`;
-      this.setStatus(`<span class="bad">flight software ${why}</span>`);
-    }
-    if (/Kernel panic/.test(tail) && !this.panicSeen) { this.panicSeen = true; this.setStatus('<span class="bad">kernel panic</span>'); }
-    if (/FSW-DOWN\r?\n/.test(tail) && this.probing) {
-      this.probing = false; this.started = false; this.operational = false;
-      this.setStatus('<span class="bad">flight software crashed</span>'); this.con += "\n";
-    }
-    if (/FSW-ALIVE\r?\n/.test(tail) && this.probing) {
-      this.probing = false; this.lastTlm = Date.now();
-      this.setStatus('<span class="bad">silent but alive (hung?)</span>'); this.con += "\n";
-    }
-  }
-
-  // ---- radio link (ttyS1) ----
-  onRadio(byte) {
-    const c = String.fromCharCode(byte);
-    if (c !== "\n") { this.s1 += c; return; }
-    if (this.s1[0] === "T") this.onTelemetry(this.s1.slice(1));
-    this.s1 = "";
-  }
-  onTelemetry(hex) {
-    this.lastTlm = Date.now();
-    if (this.operational && !this.probing && /hung/.test(this.statusHtml)) this.setStatus('<span class="ok">OPERATIONAL</span>');
-    const mid = parseInt(hex.slice(0, 4), 16);
-    const b = (i) => parseInt(hex.substr(i * 2, 2), 16);
-    const u32at = (i) => (b(i) | (b(i + 1) << 8) | (b(i + 2) << 16) | (b(i + 3) << 24)) >>> 0;
-    this.tlmCounts.set(mid, (this.tlmCounts.get(mid) || 0) + 1);
-    if (mid === 0x0808) {
-      // CCSDS header (16 bytes) + AppName[20] + EventID, EventType, SC ID, CPU ID (12 bytes) + Message[122]
-      const cstr = (o, n) => { let t = ""; for (let i = o; i < o + n && i * 2 < hex.length && b(i); i++) t += String.fromCharCode(b(i)); return t; };
-      const evType = ["", "DEBUG", "INFO", "ERROR", "CRIT"][b(38) | (b(39) << 8)] || "?";
-      this.log(`${cstr(16, 20)} ${evType}: ${cstr(48, 122)}`);
-    }
-    if (mid === 0x0883) this.v.ctr = b(16);
-    if (mid === 0x08c1 && hex.length >= 136) {
-      this.calc = { step: u32at(16), sum: u32at(20), copies: [u32at(24), u32at(28), u32at(32)], steps: [u32at(36), u32at(40), u32at(44)],
-        repairs: u32at(48), on: b(64) === 1, mask: b(65), t: Date.now() };
-      if (this.calc.mask) this.lastRepair = { mask: this.calc.mask, copies: this.calc.copies.slice(), t: Date.now() };
-    }
-    if (mid === 0x08c0) {
-      this.v.flips = u32at(20);
-      if (hex.length >= 128) { this.v.ecc = b(52) === 1; this.v.eccC = u32at(56); this.v.eccU = u32at(60); }
-    }
-    if (this === target()) renderTelemetry();
-    renderSoon();
-  }
-
-  // ---- watchdog chip (ttyS2) ----
-  // Health & Safety arms it ("WS<ms>", "WE") and kicks it ("WK") every cycle while healthy.
-  onWatchdogBus(byte) {
-    const c = String.fromCharCode(byte);
-    if (c !== "\n") { this.s2 += c; return; }
-    const line = this.s2.trim(); this.s2 = "";
-    if (line.startsWith("WS")) this.wd.timeoutMs = parseInt(line.slice(2), 10) || 0;
-    else if (line === "WE") { this.wd.enabled = watchdogsOn; this.wd.byHs = true; this.wd.lastKick = Date.now(); }
-    else if (line === "WD") this.wd.enabled = false;
-    else if (line === "WK") this.wd.lastKick = Date.now();
-  }
-
-  // ---- once a second: watchdog expiry and ground-station silence check ----
-  tick() {
-    if (!this.emu || this.busy) return;
-    const now = Date.now();
-    if (this.wd.enabled && this.wd.timeoutMs && now - this.wd.lastKick > this.wd.timeoutMs) {
-      this.wd.enabled = false; this.wdResets++;
-      if (!this.reachedOperational) this.failedStreak++;
-      this.log(`WATCHDOG CRIT: no kick for ${((now - this.wd.lastKick) / 1000).toFixed(1)}s: hardware reset, power-cycling`);
-      this.powerCycle("watchdog"); return;
-    }
-    if (this.operational && now - this.lastTlm > SILENCE_MS && !this.probing) {
-      this.probing = true; this.setStatus('<span class="bad">telemetry lost, checking…</span>');
-      this.sh("pidof core-cpu1 >/dev/null && echo FSW-ALIV'E' || echo FSW-DOW'N'");
-    }
-  }
-
-  healthy(now) { return !!this.emu && !this.busy && this.operational && now - this.lastTlm < SILENCE_MS; }
-
-  // ---- TMR resync: copy the whole running state of a healthy computer into this one ----
-  async resyncFrom(src) {
-    if (!this.emu || !src.emu || this.busy || src.busy) return false;
-    this.busy = true; src.busy = true;
-    try {
-      const t0 = performance.now();
-      const state = await src.emu.save_state();
-      await this.emu.restore_state(state);
-      const ms = Math.round(performance.now() - t0);
-      Object.assign(this, { con: `(state copied from ${src.name})\n`, s1: "", s2: "", started: true, operational: true, probing: false,
-        reachedOperational: true, autostartSeen: true, exitSeen: false, panicSeen: false, failedStreak: 0, lastTlm: Date.now(),
-        disagreeSince: 0, downSince: 0 });
-      this.wd = { ...src.wd, lastKick: Date.now(), enabled: watchdogsOn && src.wd.enabled };
-      this.v = { ...src.v }; this.calc = src.calc && { ...src.calc }; this.resyncs++;
-      setTimeout(() => this.requestMap(), 1000);   // same pages, new contents: refresh labels anyway
-      this.setStatus(`<span class="ok">OPERATIONAL (resynced from ${src.name})</span>`);
-      return ms;
-    } catch (e) {
-      this.log(`resync from ${src.name} failed: ${e.message}`); return false;
-    } finally { this.busy = false; src.busy = false; }
-  }
-
-  // ---- diagnostic port (ttyS3): physical memory map ----
-  // The VM's memmap helper walks the page tables and reports which physical
-  // page belongs to which process and region. That is how the hardware view
-  // (chips, physical addresses) is matched to the software (processes, modules).
-  requestMap() { if (this.emu) this.emu.serial_send_bytes(3, new TextEncoder().encode("M\n")); }
-  onDiag(byte) {
-    const c = String.fromCharCode(byte);
-    if (c !== "\n") { this.s3 += c; return; }
-    const l = this.s3; this.s3 = "";
-    if (l === "MB") this.mapBuf = [];
-    else if (l.startsWith("ME") && this.mapBuf) { this.map = buildMap(this.mapBuf); this.mapBuf = null; window.onMapUpdate && window.onMapUpdate(this); }
-    else if (this.mapBuf) this.mapBuf.push(l);
-  }
-  // what lives at a physical address right now
-  describe(pa) {
-    const pg = pa >>> 12;
-    if (!this.map) return { label: "unknown (no memory map yet)", cat: "free" };
-    const r = this.map.pageRun[pg];
-    if (r === undefined || r < 0) return { label: "free memory", cat: "free" };
-    const run = this.map.runs[r];
-    const va = run.va !== undefined ? run.va + (pg - run.pfn) * 4096 + (pa & 4095) : null;
-    return { label: run.comm ? `${run.comm} ${run.label}` : run.label, cat: run.cat, va };
-  }
-
-  // ---- radiation hits at the hardware level ----
-  // RAM: a particle flips bits in the physical memory of the emulated PC. The
-  // memory controller's ECC (when on) corrects single-bit upsets and flags
-  // multi-bit ones, before any software sees them.
-  hitRam(pa, mask) {
-    if (!this.emu || this.busy) return null;
-    const what = this.describe(pa), nbits = popcount(mask);
-    this.hw.hits++;
-    let result;
-    if (eccWanted && nbits === 1) { this.hw.corrected++; result = "corrected by ECC"; }
-    else {
-      const before = this.emu.read_memory(pa, 1)[0];
-      this.emu.write_memory([before ^ mask], pa);
-      if (eccWanted) { this.hw.uncorrectable++; result = `ECC UNCORRECTABLE ${nbits}-bit upset, landed (${hex2(before)}->${hex2(before ^ mask)})`; }
-      else result = `landed (${hex2(before)}->${hex2(before ^ mask)})`;
-    }
-    this.log(`BEAM RAM 0x${pa.toString(16).padStart(7, "0")} mask 0x${hex2(mask)}: ${what.label}${what.va != null ? ` @va 0x${what.va.toString(16)}` : ""} — ${result}`);
-    render();
-    return { what, result };
-  }
-  // Flash: the boot storage, kernel first then the filesystem image. The damage waits for the next boot.
-  hitFlash(index, mask) {
-    const kl = this.kernel.length, total = kl + this.fs.length;
-    index = ((index % total) + total) % total;
-    const area = index < kl ? this.kernel : this.fs, abs = index < kl ? index : index - kl;
-    const what = describeFlash(index);
-    const before = area[abs]; area[abs] ^= mask;
-    const key = (area === this.kernel ? "k" : "f") + abs;
-    const x = (this.diffs.get(key) || 0) ^ mask;
-    if (x) this.diffs.set(key, x); else this.diffs.delete(key);
-    this.log(`BEAM SD CARD byte ${index} mask 0x${hex2(mask)}: ${what} (${hex2(before)}->${hex2(area[abs])}), takes effect at the next boot`);
-    render(); window.onFlashUpdate && window.onFlashUpdate(this);
-    return { what };
-  }
-
-  // ---- boot storage hits ----
-  hitStorage(name, offset, bit) {
-    let area, base, size;
-    if (name === "kernel") { area = this.kernel; base = 0; size = area.length; }
-    else { const f = assets.files.find((x) => x.name === name); if (!f) return; area = this.fs; base = f.dataOff; size = f.size; }
-    const rel = ((offset % size) + size) % size, abs = base + rel, mask = 1 << bit;
-    const before = area[abs]; area[abs] ^= mask;
-    const key = (area === this.kernel ? "k" : "f") + abs;
-    const x = (this.diffs.get(key) || 0) ^ mask;
-    if (x) this.diffs.set(key, x); else this.diffs.delete(key);
-    this.log(`STORAGE hit ${name}+0x${rel.toString(16)} bit ${bit}: ${before.toString(16).padStart(2, "0")}->${area[abs].toString(16).padStart(2, "0")} (takes effect at the next boot)`);
-    render();
-  }
-  restoreStorage() { this.kernel = assets.kernel.slice(); this.fs = assets.fs.slice(); this.diffs.clear(); this.log("STORAGE restored from the launch image (ground re-upload)"); render(); window.onFlashUpdate && window.onFlashUpdate(this); }
-  diffBits() { let n = 0; for (const v of this.diffs.values()) for (let x = v; x; x >>= 1) n += x & 1; return n; }
-}
-
-// ---------------------------------------------------------------------------
-// Physical memory map helpers (shared with the 3D view)
-// ---------------------------------------------------------------------------
-// iOBC-class SDRAM is 64 MB. v86's loader always places the root filesystem image
-// at the 64 MB mark, so the emulated PC gets just enough extra RAM to hold it
-// (the kernel frees that area right after unpacking the image).
-const MEM_MB_BASE = 64;
-let MEM_MB = 72, RAM_PAGES = MEM_MB * 256;
-const popcount = (m) => { let n = 0; for (let x = m; x; x >>= 1) n += x & 1; return n; };
-const hex2 = (v) => v.toString(16).padStart(2, "0");
-const LIBS = /^(libc|libm|ld-linux|libgcc|libpthread|librt|libdl)/;
-function categorize(comm, label) {
-  if (label.startsWith("tmr:")) return "tmr" + label.split(":")[2];
-  if (comm !== "core-cpu1") return LIBS.test(label) ? "lib" : "other";
-  if (LIBS.test(label)) return "lib";
-  if (label.startsWith("core-cpu1") || /^(heap|stack|anon|bss)$/.test(label) || label.startsWith("SYSV")) return "cfs";
-  return /\.so:/.test(label) ? "app" : "cfs";
-}
-function buildMap(lines) {
-  const runs = [], pageRun = new Int32Array(RAM_PAGES).fill(-1);
-  for (const l of lines) {
-    const f = l.split(" ");
-    if (f[0] === "K") runs.push({ pfn: parseInt(f[1], 16), n: parseInt(f[2], 16), label: f[3].replace(/_/g, " "), comm: "", cat: "kernel" });
-    else if (f[0] === "R") runs.push({ pfn: parseInt(f[1], 16), n: parseInt(f[2], 16), va: parseInt(f[3], 16), pid: parseInt(f[4], 16), comm: f[5], label: f[6], cat: categorize(f[5], f[6]) });
-  }
-  // first claim wins: kernel, then cFS (listed first by memmap), then everyone else
-  runs.forEach((r, i) => { for (let k = 0; k < r.n; k++) { const p = r.pfn + k; if (p < RAM_PAGES && pageRun[p] < 0) pageRun[p] = i; } });
-  return { runs, pageRun, t: Date.now() };
-}
-function describeFlash(index) {
-  const kl = assets.kernel.length;
-  if (index < kl) return "kernel image";
-  const off = index - kl, f = assets.files.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
-  return f ? `file ${f.name}+0x${(off - f.dataOff).toString(16)}` : "filesystem metadata (archive header)";
-}
-function flashCategory(index) {
-  const kl = assets.kernel.length;
-  if (index < kl) return "kernel";
-  const off = index - kl, f = assets.files.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
-  if (!f) return "free";
-  if (f.name === "cfs/cpu1/core-cpu1") return "cfs";
-  if (f.name.startsWith("cfs/")) return "app";
-  if (/^lib/.test(f.name)) return "lib";
-  return "other";
-}
-
-// ---------------------------------------------------------------------------
-// Configuration: one computer, or three under a voter
-// ---------------------------------------------------------------------------
-let mode = "single", computers = [], eccWanted = false;
-const voter = { masked: 0, resyncs: 0, last: "", voted: null, agree: 0 };
-const target = () => computers[Math.min(+$("target").value || 0, computers.length - 1)];
-const fleet = () => computers.filter((c) => c.emu);
-
-async function configure(newMode) {
-  mode = newMode;
-  const old = computers; computers = [];
-  await Promise.all(old.map((c) => c.shutdown()));
-  const n = mode === "tmr" ? 3 : 1;
-  $("target").innerHTML = NAMES.slice(0, n).map((x, i) => `<option value="${i}">${x}</option>`).join("");
-  Object.assign(voter, { masked: 0, resyncs: 0, last: "", voted: null, agree: 0 });
-  groundLog.length = 0;
-  computers = NAMES.slice(0, n).map((x) => new FlightComputer(x));
-  $("voter").hidden = mode !== "tmr";
-  logGround(mode === "tmr" ? "[GROUND] TMR: 3 computers powered on, voter active" : "[GROUND] single computer powered on");
-  renderAll();
-}
-
-// ---------------------------------------------------------------------------
-// Voter (TMR only). It sits outside the computers, like voting hardware:
-//  - commands from the ground are fanned out to every computer
-//  - each second it compares what the computers report: are they up, and do
-//    they agree on SAMPLE_APP's command counter (an application output)?
-//  - a computer that is down, or disagrees with the other two for longer than
-//    DISAGREE_MS, is outvoted; the voter then resyncs it from a healthy one.
-// The ground only ever sees the majority value, so one bad computer is masked.
-// ---------------------------------------------------------------------------
-let voterBusy = false;
-async function runVoter() {
-  if (mode !== "tmr" || voterBusy) return;
-  voterBusy = true;
-  try { await voteOnce(); } finally { voterBusy = false; }
-}
-async function voteOnce() {
-  const now = Date.now();
-  const up = computers.filter((c) => c.healthy(now));
-  // majority value of the counter among healthy computers
-  const tally = new Map(); for (const c of up) if (c.v.ctr !== null) tally.set(c.v.ctr, (tally.get(c.v.ctr) || 0) + 1);
-  let maj = null, majN = 0; for (const [v, n] of tally) if (n > majN) { maj = v; majN = n; }
-  voter.voted = majN >= 2 ? maj : null; voter.agree = majN;
-  for (const c of computers) {
-    if (c.busy || !c.emu) continue;
-    const isUp = c.healthy(now);
-    // down: after its boot, or a boot that is taking far too long
-    if (!isUp) { if (!c.downSince) c.downSince = now; } else c.downSince = 0;
-    const disagrees = isUp && voter.voted !== null && c.v.ctr !== null && c.v.ctr !== voter.voted;
-    if (disagrees) { if (!c.disagreeSince) { c.disagreeSince = now; logGround(`[VOTER] ${c.name} disagrees: counter ${c.v.ctr}, majority ${voter.voted} (masked)`); voter.masked++; } }
-    else c.disagreeSince = 0;
-    const downTooLong = c.downSince && now - c.downSince > (c.reachedOperational ? RESYNC_AFTER_DOWN_MS : BOOT_WINDOW_MS + 15000);
-    const wrongTooLong = c.disagreeSince && now - c.disagreeSince > DISAGREE_MS;
-    if ((downTooLong || wrongTooLong) && voter.voted !== null) {
-      const donor = computers.find((d) => d !== c && d.healthy(now) && d.v.ctr === voter.voted);
-      if (!donor) continue;
-      const why = downTooLong ? "down" : "outvoted";
-      logGround(`[VOTER] ${c.name} ${why}: resyncing from ${donor.name}…`);
-      const ms = await c.resyncFrom(donor);
-      if (ms !== false) { voter.resyncs++; voter.last = `${c.name} ← ${donor.name} (${ms} ms)`; logGround(`[VOTER] ${c.name} resynced from ${donor.name} in ${ms} ms`); }
-      break;   // one resync per round
-    }
-  }
-  render();
-}
-
-setInterval(() => { for (const c of computers) c.tick(); runVoter(); }, 1000);
-setInterval(() => { for (const c of computers) if (c.operational && !c.busy) c.requestMap(); }, 15000);   // memory layout drifts as software runs
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-let renderQueued = false;
-function renderSoon() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); } }
-
-function render() {
-  const now = Date.now(), t = target();
-  $("cards").innerHTML = computers.map((c, i) => {
-    const since = (now - c.wd.lastKick) / 1000;
-    const wd = !watchdogsOn ? "disconnected" : !c.wd.enabled ? "off" : !c.wd.byHs ? `boot window ${since.toFixed(0)}/${(c.wd.timeoutMs / 1000).toFixed(0)}s` : `armed, last kick ${since.toFixed(1)}s ago`;
-    const vote = mode !== "tmr" ? "" : c.busy ? '<span class="pill warn">resyncing</span>'
-      : !c.healthy(now) ? '<span class="pill bad">down</span>'
-      : c.disagreeSince ? '<span class="pill bad">outvoted</span>' : '<span class="pill ok">agrees</span>';
-    return `<div class="card${c === t ? " target" : ""}"><h3><span>Computer ${c.name}</span>${vote}</h3>
-      <div>${c.statusHtml || ""}</div>
-      <div><span class="k">watchdog</span> ${wd} · <span class="k">resets</span> ${c.wdResets}</div>
-      <div><span class="k">FRAM boot record</span> boot #${c.boots} · failed in a row ${c.failedStreak} · last reset: ${c.lastReset}${mode === "tmr" ? ` · <span class="k">resyncs</span> ${c.resyncs}` : ""}</div>
-      <div><span class="k">SAMPLE_APP counter</span> ${c.v.ctr ?? "–"} · <span class="k">bits flipped</span> ${c.v.flips}</div>
-      <div><span class="k">ECC</span> ${eccWanted ? "on" : "off"}, corrected ${c.v.eccC + c.hw.corrected}, uncorrectable ${c.v.eccU + c.hw.uncorrectable}</div>
-      <div><span class="k">SD card</span> ${c.diffBits()} bits differ from the launch image</div>
-      <div><span class="k">calculator</span> ${c.calc ? `step ${c.calc.step}, sum ${c.calc.sum} ${calcOk(c.calc) ? '<span class="ok">✓</span>' : '<span class="bad">✗ wrong</span>'}` : "–"}</div></div>`;
-  }).join("");
-  // overall status
-  if (mode === "single") {
-    const c = computers[0]; $("status").innerHTML = c ? (c.statusHtml || "") : "loading…";
-  } else {
-    const up = computers.filter((c) => c.healthy(now)).length;
-    $("status").innerHTML = voter.voted !== null && voter.agree === 3 ? `<span class="ok">voted output OK: 3/3 agree</span>`
-      : voter.voted !== null ? `<span class="warn">voted output OK: ${voter.agree}/3 agree, fault masked</span>`
-      : up ? `<span class="warn">no majority yet (${up}/3 up)</span>` : "computers booting…";
-    $("voter").innerHTML = `Voter: SAMPLE_APP counter (voted) <b>${voter.voted ?? "–"}</b> · disagreements masked <b>${voter.masked}</b> · resyncs <b>${voter.resyncs}</b>${voter.last ? ` · last ${voter.last}` : ""}`;
-  }
-  // controls
-  const anyUp = computers.some((c) => c.operational), tUp = t && t.operational && !t.busy;
-  for (const id of ["b-noop", "b-restart", "b-sample-noop", "f-ecc"]) $(id).disabled = !anyUp;
-  for (const id of ["f-query", "f-counter", "f-counter2", "f-data", "f-code", "b-kill"]) $(id).disabled = !tUp;
-  $("b-start").disabled = !t || !t.emu || t.started || t.busy;
-  for (const id of ["st-file", "st-hit", "st-restore", "st-cycle"]) $(id).disabled = !assets.fs || !t;
-  $("f-ecc").textContent = "ECC: " + (eccWanted ? "ON" : "OFF"); $("f-ecc").setAttribute("aria-pressed", String(eccWanted));
-  for (const el of document.querySelectorAll(".tname")) el.textContent = t ? t.name : "";
-  renderCalc(t);
-}
-// the ground knows the right answer: 1 + 2 + … + step, modulo 2^32 like the flight code
-const calcExpected = (step) => Number((BigInt(step) * BigInt(step + 1) / 2n) & 0xffffffffn);
-const calcOk = (c) => c.sum === calcExpected(c.step);
-function renderCalc(t) {
-  const c = t && t.calc, up = t && t.operational && !t.busy && c;
-  for (const id of ["c-tmr", "c-hit1", "c-hit2", "c-hit3", "c-hit12", "c-reset"]) $(id).disabled = !up;
-  if (!c) { $("calc").innerHTML = '<div><span class="k">waiting for TMR_CALC telemetry…</span></div>'; return; }
-  const exp = calcExpected(c.step), good = calcOk(c);
-  const rep = t.lastRepair && Date.now() - t.lastRepair.t < 4000 ? t.lastRepair : null;   // show a repair for a few seconds
-  const copy = (k) => {
-    const wasBad = rep && rep.mask & (1 << k);
-    const note = !c.on && k > 0 ? "unused (TMR off)" : wasBad ? `computed ${rep.copies[k]}, outvoted → repaired` : "agrees";
-    return `<div class="${wasBad ? "hit" : ""}"><span class="k">copy ${k + 1}</span><b>${c.copies[k]}</b><span class="k">${note}</span></div>`;
-  };
-  $("calc").innerHTML = `
-    <div><span class="k">step</span><b>${c.step}</b></div>
-    <div><span class="k">correct sum</span><b>${exp}</b></div>
-    <div class="${good ? "" : "hit"}"><span class="k">reported sum (voted)</span><b class="${good ? "ok" : "bad"}">${c.sum} ${good ? "✓" : "✗"}</b></div>
-    ${copy(0)}${copy(1)}${copy(2)}
-    <div><span class="k">repairs without reboot</span><b>${c.repairs}</b></div>`;
-  $("c-tmr").textContent = "Software TMR: " + (c.on ? "ON" : "OFF"); $("c-tmr").setAttribute("aria-pressed", String(c.on));
-}
-function renderEvents() {
-  const t = target(); const all = groundLog.concat(t ? t.events : []).sort((a, b) => a.t - b.t).slice(-80);
-  $("evt").textContent = all.map((e) => e.line).join("\n"); $("evt").scrollTop = 1e9;
-}
-function renderTelemetry() {
-  const t = target(); if (!t) return;
-  $("tlm").textContent = [...t.tlmCounts].sort((x, y) => x[0] - y[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n");
-}
-function renderAll() { render(); renderEvents(); renderTelemetry(); const t = target(); $("con").textContent = t ? t.con : ""; }
-
-// ---------------------------------------------------------------------------
-// Controls
-// ---------------------------------------------------------------------------
-const toAll = (p) => { for (const c of fleet()) c.send(p); };   // ground commands go to every computer
-$("mode").onchange = () => configure($("mode").value);
-$("target").onchange = () => { renderAll(); scope.prev = null; renderScope(); };
-$("b-noop").onclick = () => toAll(CMD.esNoop());
-$("b-restart").onclick = () => toAll(CMD.restartSample());
-$("b-sample-noop").onclick = () => toAll(CMD.sampleNoop());
-$("f-ecc").onclick = () => { eccWanted = !eccWanted; toAll(CMD.setEcc(eccWanted)); render(); };
-$("wd-jumper").onclick = () => {
-  watchdogsOn = !watchdogsOn;
-  for (const c of computers) { if (watchdogsOn) { c.wd.lastKick = Date.now(); c.wd.enabled = true; } else c.wd.enabled = false; }
-  $("wd-jumper").textContent = "Watchdogs: " + (watchdogsOn ? "ON" : "OFF"); $("wd-jumper").setAttribute("aria-pressed", String(watchdogsOn)); render();
-};
-// radiation: only the target computer is hit
-$("f-query").onclick = () => target().send(CMD.fiQuery("SAMPLE_APP"));
-$("f-counter").onclick = () => target().send(CMD.fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x80));
-$("f-counter2").onclick = () => target().send(CMD.fiSymbol("SAMPLE_APP", "SAMPLE_APP_Data", 0, 0x81));
-$("f-data").onclick = () => target().send(CMD.fiRandom("SAMPLE_APP", "data", 8, 0));
-$("f-code").onclick = () => { const c = target(); c.send(CMD.fiRandom("SAMPLE_APP", "code", 40, 0)); for (let i = 1; i <= 4; i++) setTimeout(() => c.send(CMD.sampleNoop()), i * 1200); };
-$("b-kill").onclick = () => target().sh("kill -9 $(pidof core-cpu1)");
-// software TMR: the setting is a ground command (all computers); the hits land on the target only
-$("c-tmr").onclick = () => { const t = target(); toAll(CMD.calcTmr(!(t.calc && t.calc.on))); };
-$("c-reset").onclick = () => toAll(CMD.calcReset());
-$("c-hit1").onclick = () => target().send(CMD.fiTmr(0, 4, 0x10));
-$("c-hit2").onclick = () => target().send(CMD.fiTmr(1, 4, 0x10));
-$("c-hit3").onclick = () => target().send(CMD.fiTmr(2, 4, 0x10));
-$("c-hit12").onclick = () => { const t = target(); t.send(CMD.fiTmr(0, 4, 0x10)); t.send(CMD.fiTmr(1, 4, 0x10)); };
-$("b-start").onclick = () => target().startFsw();
-$("st-hit").onclick = () => target().hitStorage($("st-file").value, parseInt($("st-off").value, 10) || 0, parseInt($("st-bit").value, 10));
-$("st-restore").onclick = () => target().restoreStorage();
-$("st-cycle").onclick = () => { const c = target(); logGround(`[GROUND] power cycle commanded for ${c.name}`); c.powerCycle("ground command"); };
-
-// ---------------------------------------------------------------------------
-// Microscope: the actual bits of the emulated RAM, re-read a few times a second.
-// Bits that change flash; a click flips exactly that bit through the same
-// hardware path as the beam (so ECC, when on, corrects it).
-// ---------------------------------------------------------------------------
-const scope = { mode: "tmr", base: 0, prev: null, chg: new Map(), hits: new Map(), lastHit: null };
-const SCOPE_BYTES = 64, ROW = 4;
-
-// rows to show: [{ pa, label, decode? }] each ROW bytes long
-function scopeRows(c) {
-  if (scope.mode === "tmr") {
-    const rows = [];
-    for (let k = 1; k <= 3; k++) {
-      const run = c.map && c.map.runs.find((r) => r.label === `tmr:CALC:${k}`);
-      if (!run) continue;
-      const pa = run.pfn * 4096;
-      rows.push({ pa, label: `copy ${k} step`, u32: true, sep: k > 1 }, { pa: pa + 4, label: `copy ${k} sum`, u32: true });
-    }
-    return rows;
-  }
-  const rows = [];
-  for (let i = 0; i < SCOPE_BYTES; i += ROW) rows.push({ pa: scope.base + i });
-  return rows;
-}
-
-function renderScope() {
-  const c = target(); if (!c) return;
-  const box = $("sc-bits"), now = performance.now();
-  if (!c.emu || c.busy) { $("sc-head").textContent = `computer ${c.name} is powering up…`; return; }
-  const rows = scopeRows(c);
-  if (scope.mode === "tmr" && !rows.length) { $("sc-head").textContent = `computer ${c.name}: waiting for the memory map to locate the TMR copies…`; box.innerHTML = ""; return; }
-  let mem;
-  try { mem = rows.map((r) => c.emu.read_memory(r.pa, ROW)); }
-  catch (e) { scope.prev = null; return; } // emulator torn down mid power cycle / mode switch
-  // remember which bits just changed, to flash them
-  if (scope.prev && scope.prev.length === mem.length) {
-    mem.forEach((bytes, i) => bytes.forEach((v, j) => {
-      const d = v ^ scope.prev[i][j];
-      for (let b = 0; b < 8; b++) if (d & (1 << b)) scope.chg.set(`${rows[i].pa + j}:${b}`, now);
-    }));
-  }
-  scope.prev = mem.map((b) => b.slice());
-  if (scope.mode === "tmr") {
-    const calc = c.calc;
-    $("sc-head").textContent = `computer ${c.name} · TMR_CALC state in three memory partitions (little-endian u32s); voted sum in telemetry: ${calc ? calc.sum : "–"}`;
-  } else {
-    const w = c.describe(scope.base);
-    $("sc-head").textContent = `computer ${c.name} · RAM 0x${scope.base.toString(16).padStart(7, "0")}–0x${(scope.base + SCOPE_BYTES - 1).toString(16)} · ${w.label}${w.va != null ? ` · va 0x${w.va.toString(16)}` : ""}`;
-  }
-  box.innerHTML = rows.map((r, i) => {
-    const bytes = mem[i];
-    const cells = [...bytes].map((v, j) => {
-      const addr = r.pa + j;
-      let bits = "";
-      for (let b = 7; b >= 0; b--) {
-        const key = `${addr}:${b}`, on = (v >> b) & 1;
-        const flash = now - (scope.chg.get(key) || -1e9) < 450, hit = now - (scope.hits.get(key) || -1e9) < 3000;
-        bits += `<span class="bit${on ? " one" : ""}${flash ? " chg" : ""}${hit ? " hit" : ""}" data-a="${addr}" data-b="${b}" title="0x${addr.toString(16)} bit ${b}">${on}</span>`;
-      }
-      return `<span class="byte">${bits}</span>`;
-    }).join("");
-    const u = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-    const val = r.u32 ? `= ${u >>> 0}` : [...bytes].map(hex2).join(" ");
-    return `<div class="brow${r.sep ? " sep" : ""}"><span class="addr${r.label ? " lbl" : ""}">${r.label || "0x" + r.pa.toString(16).padStart(7, "0")}</span>${cells}<span class="val">${val}</span></div>`;
-  }).join("");
-}
-
-function scopeAt(pa, mark) {
-  scope.mode = "window"; scope.base = Math.max(0, Math.floor(pa / SCOPE_BYTES) * SCOPE_BYTES); scope.prev = null;
-  if (mark) { scope.lastHit = pa; $("sc-last").disabled = false; }
-  renderScope(); window.markAddress && window.markAddress(computers.indexOf(target()), scope.base);
-}
-// called for every RAM hit so the microscope can show it
-function noteHit(pa, mask) { const t = performance.now(); for (let b = 0; b < 8; b++) if (mask & (1 << b)) scope.hits.set(`${pa}:${b}`, t); }
-
-$("sc-bits").addEventListener("click", (e) => {
-  const el = e.target.closest(".bit"); if (!el) return;
-  const c = target(), pa = +el.dataset.a, b = +el.dataset.b;
-  const r = c.hitRam(pa, 1 << b);
-  if (r) { noteHit(pa, 1 << b); $("beamlog").textContent = `${c.name} RAM 0x${pa.toString(16).padStart(7, "0")} bit ${b} → ${r.what.label}: ${r.result}`; window.showBeamAt && window.showBeamAt(computers.indexOf(c), pa); }
-  renderScope();
-});
-$("sc-tmr").onclick = () => { scope.mode = "tmr"; scope.prev = null; renderScope(); };
-$("sc-last").onclick = () => { if (scope.lastHit != null) scopeAt(scope.lastHit); };
-$("sc-prev").onclick = () => { if (scope.mode === "tmr") scope.base = 0; scopeAt(Math.max(0, scope.base - SCOPE_BYTES)); };
-$("sc-next").onclick = () => scopeAt(Math.min(RAM_PAGES * 4096 - SCOPE_BYTES, scope.base + SCOPE_BYTES));
-setInterval(() => { if (document.visibilityState === "visible") renderScope(); }, 300);
-
-// repaint watchdog countdowns
-setInterval(render, 1000);
-
-$("target").innerHTML = '<option value="0">A</option>';
-loadAssets().then(() => configure($("mode").value)).catch((e) => { $("status").innerHTML = `<span class="bad">could not load the VM images: ${e.message}</span>`; });
-</script>
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
-<script type="module">
-// ---------------------------------------------------------------------------
-// 3D hardware view. Each flight computer is a board with a RAM chip, a flash
-// chip, a CPU and a watchdog. The RAM chip's top shows the live physical
-// memory map (one pixel per 4 KB page, coloured by owner), the flash chip
-// shows the boot storage. A click is a particle strike: the point on the chip
-// becomes a physical address (RAM) or storage byte (flash), the same point
-// always giving the same byte and bit.
-// ---------------------------------------------------------------------------
-import * as THREE from "three";
-import { OrbitControls } from "./vendor/OrbitControls.js";   // three.js r160, bundled so the demo works offline
-
-const COLORS = { free: "#161b22", kernel: "#8957e5", cfs: "#1f6feb", app: "#2ea043", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
-const RGB = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)]]));
-const RAM_W = 256;                        // RAM rows follow the memory size: one pixel per 4 KB page
-const FLASH_W = 64;
-const BOARD_GAP = 10.5;
-
-const host = document.getElementById("view3d"), hover = document.getElementById("hover"), beamlog = document.getElementById("beamlog");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-host.prepend(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color("#06080c");
-const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 200);
-camera.position.set(0, 9, 11);
-const controls = new OrbitControls(camera, renderer.domElement);
-let dirty = true, userMoved = false, boards = [], built = null; const redraw = () => { dirty = true; };
-controls.addEventListener("change", redraw);
-controls.addEventListener("start", () => { userMoved = true; });
-controls.enableDamping = true; controls.maxPolarAngle = 1.35; controls.minDistance = 4; controls.maxDistance = 45;
-scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(4, 10, 6); scene.add(sun);
-
-function resize() { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); dirty = true; if (boards.length && !userMoved) frame(); }
-new ResizeObserver(resize).observe(host); resize();
-
-// a box whose top face carries a canvas texture
-function chip(w, d, h, canvas, sideColor = "#1c2128") {
-  const side = new THREE.MeshStandardMaterial({ color: sideColor, roughness: 0.8 });
-  const tex = new THREE.CanvasTexture(canvas); tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.LinearFilter; tex.colorSpace = THREE.SRGBColorSpace;
-  const top = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 });
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side, side, top, side, side, side]);
-  m.userData.tex = tex; m.userData.canvas = canvas;
-  return m;
-}
-function labelCanvas(text, w = 256, h = 256, bg = "#1c2128") {
-  const c = document.createElement("canvas"); c.width = w; c.height = h; const g = c.getContext("2d");
-  g.fillStyle = bg; g.fillRect(0, 0, w, h); g.fillStyle = "#c9d1d9"; g.font = `bold ${Math.round(h / 5)}px system-ui, sans-serif`;
-  g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, w / 2, h / 2); return c;
-}
-
-function buildBoards() {
-  for (const b of boards) scene.remove(b.group);
-  for (const m of markers.values()) scene.remove(m); markers.clear();
-  boards = [];
-  const n = computers.length;
-  computers.forEach((c, i) => {
-    const group = new THREE.Group();
-    // side by side on wide screens, front to back on narrow (phone) screens
-    if (host.clientWidth / host.clientHeight >= 1.6 || n === 1) group.position.x = (i - (n - 1) / 2) * BOARD_GAP;
-    else group.position.z = (i - (n - 1) / 2) * 7;
-    // printed circuit board with silk-screen labels
-    const silk = document.createElement("canvas"); silk.width = 900; silk.height = 600; const g = silk.getContext("2d");
-    g.fillStyle = "#0e3b2c"; g.fillRect(0, 0, 900, 600); g.strokeStyle = "#1d6b4f"; g.lineWidth = 3;
-    for (let k = 0; k < 14; k++) { g.beginPath(); g.moveTo(40 + k * 60, 560); g.lineTo(40 + k * 60, 420); g.lineTo(80 + k * 50, 330); g.stroke(); }
-    g.fillStyle = "#d8f3e6"; g.font = "24px system-ui, sans-serif";
-    g.fillText(`SDRAM ${MEM_MB_BASE} MB (+${MEM_MB - MEM_MB_BASE} MB boot staging) · 1 pixel = 4 KB`, 40, 44); g.fillText("SD CARD", 620, 44);
-    g.fillText("CPU (ARM9-class, emulated x86)", 40, 588); g.fillText("WDT", 445, 588); g.fillText("FRAM 512 KB", 680, 520);
-    g.font = "bold 26px system-ui, sans-serif"; g.fillText(`FLIGHT COMPUTER ${c.name}`, 610, 588);
-    const pcb = chip(9, 6, 0.16, silk, "#0b2e22"); pcb.userData.kind = "board"; group.add(pcb);
-    // RAM: one pixel per physical page
-    const RAM_H = Math.ceil(RAM_PAGES / RAM_W);
-    const ramC = document.createElement("canvas"); ramC.width = RAM_W; ramC.height = RAM_H;
-    const ram = chip(5, Math.max(1.2, 5 * RAM_H / RAM_W), 0.22, ramC); ram.position.set(-1.6, 0.19, -0.95); ram.userData.kind = "ram"; group.add(ram);
-    // flash: one pixel per 4 KB of boot storage
-    const flashBytes = assets.kernel.length + assets.fs.length, flashPages = Math.ceil(flashBytes / 4096), flashH = Math.ceil(flashPages / FLASH_W);
-    const flC = document.createElement("canvas"); flC.width = FLASH_W; flC.height = flashH;
-    const flash = chip(2.4, 2.4 * flashH / FLASH_W, 0.22, flC); flash.position.set(2.8, 0.19, -0.95); flash.userData.kind = "flash"; group.add(flash);
-    flash.userData.pages = flashPages;
-    const cpu = chip(2.1, 2.1, 0.3, labelCanvas("CPU")); cpu.position.set(-2.9, 0.23, 1.65); cpu.userData.kind = "cpu"; group.add(cpu);
-    const wdt = chip(1.1, 1.1, 0.22, labelCanvas("WDT", 128, 128)); wdt.position.set(0.6, 0.19, 1.85); wdt.userData.kind = "wdt"; group.add(wdt);
-    const fram = chip(1.4, 1.0, 0.2, labelCanvas("FRAM", 192, 128)); fram.position.set(2.8, 0.18, 1.3); fram.userData.kind = "fram"; group.add(fram);
-    for (const m of [pcb, ram, flash, cpu, wdt, fram]) m.userData.computer = c;
-    scene.add(group);
-    const b = { c, group, ram, flash, cpu, wdt, fram, pickables: [ram, flash, cpu, wdt, fram, pcb] };
-    boards.push(b);
-    drawRam(b); drawFlash(b);
-  });
-  built = computers;
-  frame();
-}
-// fit all boards in view from a fixed viewing angle
-function frame() {
-  const box = new THREE.Box3(); for (const b of boards) box.expandByObject(b.group);
-  const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
-  const vfov = camera.fov * Math.PI / 180, hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
-  const dir = new THREE.Vector3(0, 0.62, 0.78).normalize();
-  // the near edge of a tilted board looks wider than the board is, so leave extra room across
-  const dist = Math.max(1.35 * (size.x / 2) / Math.tan(hfov / 2), 1.08 * (size.z * 0.42 + 0.6) / Math.tan(vfov / 2));
-  camera.position.copy(center).addScaledVector(dir, dist); controls.target.copy(center); controls.update(); dirty = true;
-}
-
-function drawRam(b) {
-  const cv = b.ram.userData.canvas, g = cv.getContext("2d"), img = g.createImageData(cv.width, cv.height), d = img.data, map = b.c.map;
-  for (let p = 0; p < cv.width * cv.height; p++) {
-    const r = map ? map.pageRun[p] : -1;
-    const col = RGB[r >= 0 ? map.runs[r].cat : "free"] || RGB.other;
-    d[p * 4] = col[0]; d[p * 4 + 1] = col[1]; d[p * 4 + 2] = col[2]; d[p * 4 + 3] = 255;
-  }
-  g.putImageData(img, 0, 0); b.ram.userData.tex.needsUpdate = true; dirty = true;
-}
-function drawFlash(b) {
-  const cv = b.flash.userData.canvas, g = cv.getContext("2d"), img = g.createImageData(cv.width, cv.height), d = img.data;
-  const damaged = new Set(), kl = assets.kernel.length;
-  for (const key of b.c.diffs.keys()) { const abs = +key.slice(1); damaged.add(((key[0] === "k" ? abs : kl + abs) / 4096) | 0); }
-  for (let p = 0; p < cv.width * cv.height; p++) {
-    const col = p >= b.flash.userData.pages ? RGB.free : damaged.has(p) ? RGB.damaged : RGB[flashCategory(p * 4096)] || RGB.other;
-    d[p * 4] = col[0]; d[p * 4 + 1] = col[1]; d[p * 4 + 2] = col[2]; d[p * 4 + 3] = 255;
-  }
-  g.putImageData(img, 0, 0); b.flash.userData.tex.needsUpdate = true; dirty = true;
-}
-window.onMapUpdate = (c) => { const b = boards.find((x) => x.c === c); if (b) drawRam(b); };
-window.onFlashUpdate = (c) => { const b = boards.find((x) => x.c === c); if (b) drawFlash(b); };
-
-// ---- aiming: a point on a chip -> the byte and bit it hits ----
-const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2();
-function pick(ev) {
-  const r = renderer.domElement.getBoundingClientRect();
-  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
-  raycaster.setFromCamera(ndc, camera);
-  const hits = raycaster.intersectObjects(boards.flatMap((b) => b.pickables), false);
-  if (!hits.length) return null;
-  const h = hits[0], m = h.object, kind = m.userData.kind, c = m.userData.computer;
-  const onTop = h.face && h.face.normal.y > 0.5;
-  if (!onTop || (kind !== "ram" && kind !== "flash")) return { kind, c, point: h.point, onTop };
-  return resolve(m, h.uv.x, 1 - h.uv.y, h.point);   // canvas coordinates: (0,0) is the chip's far-left corner
-}
-// a point on a chip's top (cu, cv in 0..1, canvas orientation) -> the byte and bit it hits
-function resolve(m, cu, cv, point) {
-  const kind = m.userData.kind, c = m.userData.computer;
-  const res = { kind, c, point, onTop: true };
-  const W = m.userData.canvas.width, H = m.userData.canvas.height;
-  const px = Math.min(cu, 0.999999) * W, py = Math.min(cv, 0.999999) * H;
-  const col = Math.floor(px), row = Math.floor(py), fx = px - col, fy = py - row;
-  const page = row * W + col, byteInPage = Math.floor(fy * 64) * 64 + Math.floor(fx * 64);
-  const bit = Math.floor(fx * 512) & 7;
-  const nb = +document.getElementById("beam").value;
-  res.mask = nb === 1 ? 1 << bit : bit <= 6 ? 3 << bit : 0xc0;
-  if (kind === "ram") { res.pa = page * 4096 + byteInPage; res.what = c.describe(res.pa).label; }
-  else { res.index = page * 4096 + byteInPage; res.what = page < m.userData.pages ? describeFlash(res.index) : "unused SD card space"; res.valid = page < m.userData.pages; }
-  return res;
-}
-function describePick(p) {
-  if (!p) return "";
-  const who = `computer ${p.c.name}`;
-  if (p.kind === "ram" && p.onTop) return `${who} · RAM 0x${p.pa.toString(16).padStart(7, "0")} · ${p.what}`;
-  if (p.kind === "flash" && p.onTop) return `${who} · SD card byte ${p.index} · ${p.what}`;
-  if (p.kind === "cpu") return `${who} · CPU (registers and caches are not modeled: hits have no effect)`;
-  if (p.kind === "fram") return `${who} · FRAM boot record: boot #${p.c.boots}, failed in a row ${p.c.failedStreak}, last reset ${p.c.lastReset} (ferroelectric cells: immune to bit flips)`;
-  if (p.kind === "wdt") return `${who} · watchdog chip (modeled as radiation-hardened: no effect)`;
-  if (p.kind === "board") return `${who} · circuit board`;
-  return `${who} · chip side`;
-}
-
-// ---- the beam ----
-const beams = [];
-function showBeam(point, color) {
-  const from = point.clone().add(new THREE.Vector3(-2.5, 7, 4));
-  const geo = new THREE.BufferGeometry().setFromPoints([from, point]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 1 }));
-  const flash = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 12), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 }));
-  flash.position.copy(point);
-  scene.add(line); scene.add(flash); beams.push({ line, flash, t0: performance.now() });
-}
-function fire(p) {
-  if (!p) return;
-  if (!$("target").querySelector(`option[value="${computers.indexOf(p.c)}"]`)) return;
-  $("target").value = String(computers.indexOf(p.c)); renderAll();
-  let msg;
-  if (p.kind === "ram" && p.onTop) {
-    const r = p.c.hitRam(p.pa, p.mask);
-    if (r) { noteHit(p.pa, p.mask); scopeAt(p.pa, true); }
-    msg = r ? `${p.c.name} RAM 0x${p.pa.toString(16).padStart(7, "0")} mask 0x${hex2(p.mask)} → ${r.what.label}: ${r.result}` : `${p.c.name} is powering up: no hit`;
-  } else if (p.kind === "flash" && p.onTop) {
-    if (!p.valid) msg = `${p.c.name} SD card: unused area, no effect`;
-    else { p.c.hitFlash(p.index, p.mask); msg = `${p.c.name} SD card byte ${p.index} mask 0x${hex2(p.mask)} → ${p.what}: latent until the next boot`; }
-  } else { msg = describePick(p); p.c.log(`BEAM ${p.kind.toUpperCase()}: no effect in this model`); }
-  beamlog.textContent = msg;
-  showBeam(p.point, p.kind === "ram" || p.kind === "flash" ? 0xff5a4f : 0x8b949e);
-}
-
-let down = null;
-renderer.domElement.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6 && performance.now() - down.t < 600) fire(pick(e));
-  down = null;
-});
-renderer.domElement.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && !e.buttons) hover.textContent = describePick(pick(e)); });
-renderer.domElement.addEventListener("pointerleave", () => { hover.textContent = ""; });
-
-// for tests and demos: fire at a chip-relative point (u, v in 0..1 across the chip top, v = 0 at the far edge)
-window.beamAt = (computerIndex, kind, u, v) => {
-  const b = boards[computerIndex]; if (!b) return null;
-  const m = b[kind]; m.updateWorldMatrix(true, false);
-  const box = new THREE.Box3().setFromObject(m), size = box.getSize(new THREE.Vector3());
-  const world = new THREE.Vector3(box.min.x + u * size.x, box.max.y, box.min.z + v * size.z);
-  const p = kind === "ram" || kind === "flash" ? resolve(m, u, v, world) : { kind, c: b.c, point: world, onTop: true };
-  fire(p); return { kind: p.kind, pa: p.pa, index: p.index, mask: p.mask, what: p.what };
-};
-// aim at a physical address (finds the pixel for that page)
-// world position of a physical address on a board's RAM chip
-function pointForAddress(ci, pa) {
-  const b = boards[ci]; if (!b) return null;
-  const m = b.ram, H = m.userData.canvas.height; m.updateWorldMatrix(true, false);
-  const page = pa >>> 12, col = page % RAM_W, row = (page / RAM_W) | 0, byte = pa & 4095;
-  const u = (col + ((byte % 64) + 0.5) / 64) / RAM_W, v = (row + (((byte / 64) | 0) + 0.5) / 64) / H;
-  const box = new THREE.Box3().setFromObject(m), size = box.getSize(new THREE.Vector3());
-  return new THREE.Vector3(box.min.x + u * size.x, box.max.y, box.min.z + v * size.z);
-}
-window.showBeamAt = (ci, pa) => { const pt = pointForAddress(ci, pa); if (pt) showBeam(pt, 0xff5a4f); };
-// a small frame on the chip where the microscope is looking
-const markers = new Map();
-window.markAddress = (ci, pa) => {
-  const pt = pointForAddress(ci, pa); if (!pt) return;
-  let m = markers.get(ci);
-  if (!m) { m = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.1, 4), new THREE.MeshBasicMaterial({ color: 0xffffff })); m.rotation.x = -Math.PI / 2; m.rotation.z = Math.PI / 4; scene.add(m); markers.set(ci, m); }
-  m.position.copy(pt).add(new THREE.Vector3(0, 0.01, 0)); dirty = true;
-};
-window.beamAtAddress = (computerIndex, pa) => {
-  const page = pa >>> 12, col = page % RAM_W, row = (page / RAM_W) | 0, byte = pa & 4095;
-  const H = boards[computerIndex] ? boards[computerIndex].ram.userData.canvas.height : 1;
-  const u = (col + ((byte % 64) + 0.5) / 64) / RAM_W, v = (row + (((byte / 64) | 0) + 0.5) / 64) / H;
-  return window.beamAt(computerIndex, "ram", u, v);
-};
-
-function animate(now) {
-  requestAnimationFrame(animate);
-  if (assets.fs && computers.length && built !== computers) buildBoards();
-  for (let i = beams.length - 1; i >= 0; i--) {
-    const b = beams[i], a = 1 - (now - b.t0) / 700;
-    if (a <= 0) { scene.remove(b.line); scene.remove(b.flash); b.line.geometry.dispose(); beams.splice(i, 1); continue; }
-    b.line.material.opacity = a; b.flash.material.opacity = a; b.flash.scale.setScalar(1 + (1 - a) * 3);
-  }
-  // draw only when something changed, so the emulators keep the CPU
-  if (controls.update() || beams.length || dirty) { renderer.render(scene, camera); dirty = false; }
-}
-requestAnimationFrame(animate);
+// Bump BUILD whenever anything here changes, so browsers never mix cached old
+// files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
+window.BUILD = "2026110501";
+(() => {
+  const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "missions", "os/linux-cfs"];
+  const map = { imports: { three: "./vendor/three.module.min.js" + v } };
+  map.imports[new URL("vendor/OrbitControls.js", location.href).href] = "./vendor/OrbitControls.js" + v;
+  for (const m of mods) map.imports[new URL(`js/${m}.js`, location.href).href] = `./js/${m}.js${v}`;
+  const im = document.createElement("script"); im.type = "importmap"; im.textContent = JSON.stringify(map); document.head.append(im);
+  const lib = document.createElement("script"); lib.src = "libv86.js" + v;
+  lib.onload = () => { const m = document.createElement("script"); m.type = "module"; m.src = "js/main.js" + v; document.body.append(m); };
+  document.body.append(lib);
+})();
 </script>
 </body>
 </html>

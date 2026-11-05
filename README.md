@@ -1,37 +1,133 @@
-# SpaceY flight software in the browser
+# Radiation vs. a CubeSat flight computer
 
-NASA's core Flight System (cFS) running unmodified inside a 32-bit Linux VM, emulated in the browser by [v86](https://github.com/copy/v86). Everything is static files, so it can be served from GitHub Pages.
+NASA's core Flight System (cFS) running unmodified on Linux inside an emulated CubeSat on-board computer, in the browser, with [v86](https://github.com/copy/v86). You fire particles at the chips of a 3D board and zoom in until you can see and flip single bits. Six guided missions walk through what each protection does and where it stops working. Everything is static files, served from GitHub Pages.
 
 ## Run it
 
-Serve `docs/` with any static server, or enable GitHub Pages on this repo (Settings → Pages → branch `main`, folder `/docs`).
+Serve `docs/` with any static server, or use GitHub Pages (branch `main`, folder `/docs`).
 
 ```
 cd docs && python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-The VM boots in about 10 s. The flight computer boots straight into cFS (about 14 s) and turns on telemetry by itself. The buttons send real CCSDS commands to cFS. Like a ground station, the page watches telemetry: if nothing arrives for 6 s it checks whether the flight software process is still alive and reports either a crash or a hang. The second row of buttons drives FAULT_INJ: hit SAMPLE_APP's counter and watch it jump in telemetry, or corrupt its code and watch the flight software crash.
+The flight computer boots into cFS in about 14 s. No special server headers are needed: v86 runs single-threaded.
 
-No special server headers are needed: v86 runs single-threaded, so GitHub Pages works as is.
+## What you can do on the page
+
+- **Three protections**, toggled from the top bar: **ECC** (in the memory controller), the hardware **Watchdog**, and **Software TMR** (in the calculator app).
+- **Three particles**: 1 bit (a single-event upset), 2 bits (two neighbouring cells, a multi-bit upset), and a shower (48 single-bit upsets scattered over a few pages).
+- **One way to inject faults: hit the hardware.** Click or tap a chip on the 3D board. RAM hits flip bits in the emulated PC's physical memory, and SD card hits damage the boot storage.
+- **Semantic zoom** on the memory chips, from the whole board down to single bits (below).
+- **Missions**, each with a setup button and goals that tick themselves off:
+  1. Break it (no protection)
+  2. Let the watchdog recover it
+  3. ECC: one bit is free
+  4. Where ECC gives up
+  5. Software TMR: repair without a reboot
+  6. Damage that waits on the SD card
 
 ## Hardware profile: ISISPACE iOBC
 
-Each flight computer follows a common CubeSat on-board computer, the ISISPACE iOBC:
-
 | | iOBC | This emulation |
 |---|---|---|
-| CPU | 32-bit ARM9, 400 MHz | 32-bit x86 (v86 emulates only x86); cFS is the same code either way thanks to OSAL |
-| RAM | 64 MB SDRAM | 64 MB, plus ~9 MB where v86's loader stages the boot image (v86 always places it at the 64 MB mark; the kernel frees it after unpacking) |
-| Non-volatile, upset-immune memory | 512 KB FRAM | FRAM chip holding the boot record: boot count, failed boots in a row, last reset cause. Survives power cycles; beam hits have no effect |
-| Storage | SD card | SD card: kernel + root filesystem, hit-able, damage takes effect at the next boot |
-| OS | FreeRTOS | Linux. FreeRTOS would not add isolation (one address space, no processes) and has no dynamic loading; Linux gives a process boundary, app reload and `/proc` page maps |
+| CPU | 32-bit ARM9, 400 MHz | 32-bit x86 (v86 emulates only x86). cFS is the same code either way thanks to OSAL. CPU hits are not modelled. |
+| RAM | 64 MB SDRAM | 64 MB, plus ~9 MB where v86's loader stages the boot image (it always places it at the 64 MB mark; the kernel frees it after unpacking). Optional SECDED ECC in the memory controller. |
+| Non-volatile, upset-immune memory | 512 KB FRAM | Holds the boot record: boot count, failed boots in a row, last reset cause. Survives resets; hits have no effect. |
+| Storage | SD card | Kernel + root filesystem. Hits are latent until the next boot. The card's own internal ECC is not modelled: a hit stands for damage beyond what it corrects. |
+| Watchdog | external | External chip on a serial bus. Runs from power-on with a 30 s boot window; Health & Safety tightens it to 10 s. |
+| OS | FreeRTOS | Linux (see "OS adapters" for trying others) |
 
-The VM image was trimmed for this: libraries live only in `lib32/` (the i386 loader's search path), the helpers are dynamically linked, the cFE test app is left out and modules are stripped (dynamic symbols kept), taking the root filesystem from 12.5 MB to 7.7 MB.
+## Semantic zoom: from the board to single bits
 
-## FAULT_INJ: radiation upset simulator
+Each memory chip's top *is* the memory, laid out like a hex dump. Every 4 KB page is a tile 16 bytes wide and 256 rows tall, and each byte is 8 bits across with the most significant bit on the left. The same point on the chip is always the same byte and bit. Keep zooming (wheel, pinch, or the + button):
 
-`build/cfs/apps/fault_inj` is a cFS app that flips bits in other apps' memory on command, like a single-event upset. It finds each target's code, read-only data, data and BSS regions from the loaded module's ELF segments, so hits can be aimed precisely and repeated exactly.
+| Zoom | What a page looks like |
+|---|---|
+| Board | one coloured pixel: who owns it (kernel, cFS, an app, a TMR copy, a library, free) |
+| Bytes | 16 × 256 texels whose brightness is each byte's value |
+| Bits | every bit, lit or dark; bits that just changed flash yellow |
+| Text | readable 0s and 1s with byte, ECC-word (8-byte) and page dividers; click one to flip exactly that bit |
+
+The page re-reads the visible part of memory 4 times a second, so you can watch the calculator count. Cells the ECC is hiding show in pink with their real stored value. The bar at the top of the view always says what is under the centre of the screen: physical address, value, owner (process and mapping) and virtual address.
+
+**How hardware is matched to software.** A particle hits physical memory, not a process. `build/memmap.c` runs in the VM on a diagnostic serial port (ttyS3). On request it walks every process's `/proc/<pid>/maps` and `/proc/<pid>/pagemap`, plus `/proc/iomem` for the kernel, and reports runs of physical pages with their owner. TMR_LIB records where its copies are in `/tmp/tmr_regions`. The page refreshes the map when cFS comes up and every 15 s.
+
+Only the visible region is drawn into an overlay texture, so the zoom stays smooth on a phone.
+
+## ECC: a real SECDED code, with a scrubber
+
+`docs/js/ecc.js` implements an extended Hamming (72,64) code, the kind a memory controller keeps next to every 8 bytes: 8 check bits per 64-bit word. The page cannot intercept the emulated CPU's reads, so it keeps, per word, the cells that are flipped and what the word held when they flipped:
+
+| Error in one word | Decoder | On the page |
+|---|---|---|
+| 1 bit | corrects it on every read | Memory reads right, the cell stays flipped (pink) until the scrubber or a software write replaces the word |
+| 2 bits | detects, cannot correct | In memory software uses: machine check, the computer resets. In free memory: the scrubber finds it and retires the page |
+| 3+ bits | may "correct" the wrong bit or see nothing | Software silently reads a wrong value |
+
+The scrubber passes every 20 s. A word software rewrites loses its old error, and turning ECC off reveals every error it was hiding.
+
+**A finding for the paper:** of all 41,664 ways to flip 3 bits of a 64-bit word, **76% end up silently wrong** under this code (9,905 detected, 31,759 miscorrected or missed). All 64 single-bit errors are corrected and all 2,016 double-bit errors detected (`ecc.js` is checked exhaustively). That is why real memory interleaves neighbouring cells across words and scrubs often.
+
+## Software TMR inside one computer
+
+- **`libs/tmr_lib`**, a cFS library loaded before the apps. `TMR_Alloc` creates a region as three separate memory mappings, each followed by a guard page. `TMR_Vote` takes the bitwise majority `(a & b) | (a & c) | (b & c)` and overwrites any copy that differs. `TMR_SetEnabled(false)` drops to one copy for comparison.
+- **`apps/tmr_calc`** (TMR_CALC), a calculator the ground can check. Every second it runs `Step += 1; Sum += Step`, so `Sum` must equal `Step × (Step + 1) / 2`. Each copy computes from its own state, then the copies are voted. Commands go to `0x18C1` (0 NOOP, 1 RESET, 2 SET_TMR) and results come back on `0x08C1`.
+
+The calculator panel's copy buttons fly the camera to each copy's bits.
+
+Findings:
+- The same bit in two copies outvotes the good one.
+- TMR cannot undo damage it never saw.
+- The three copies landed on **adjacent physical pages** (two pages apart with the guard page), so one multi-cell upset or a failing chip could take out two copies at once.
+
+## Hardware watchdog
+
+cFS Health & Safety arms the watchdog at startup and services it every cycle. The stock Linux PSP's watchdog calls are empty, so `build/cfs/psp/cfe_psp_watchdog.c` sends them to the watchdog chip on `/dev/ttyS2`:
+
+| Line | Meaning |
+|---|---|
+| `WS<ms>` | set timeout |
+| `WE` / `WD` | enable / disable |
+| `WK` | kick |
+
+If no kick arrives in time, the chip power-cycles the computer. The v86 instance is destroyed and a new one boots, because v86's own `restart()` does not handle a bzImage boot. `init` starts cFS by itself when the kernel command line has `fsw=auto`.
+
+## SD card: latent damage and boot loops
+
+Every power-on boots from the SD card as it is at that moment. The filesystem image is kept uncompressed, so a hit damages one file instead of the whole archive:
+
+| SD hit | Next boot |
+|---|---|
+| an unused file | normal |
+| `cfs/cpu1/cf/sample_app.so` | cFS logs `Could not load file:/cf/sample_app.so`; everything else runs |
+| `cfs/cpu1/core-cpu1` | the flight software cannot start; the watchdog resets again and again (boot loop), and FRAM counts the failed boots |
+| ground restores the card | the next reset boots clean |
+
+## OS adapters
+
+The emulated hardware (`docs/js/hardware.js`) knows nothing about Linux or cFS. Everything OS-specific lives in an adapter, `docs/js/os/linux-cfs.js`: boot images, console patterns, telemetry decoding, memory-map categories. To try another OS, write another adapter and its small guest-side agents. The serial contract is in [`docs/js/os/README.md`](docs/js/os/README.md).
+
+## Code layout
+
+| Path | What |
+|---|---|
+| `docs/index.html` | page layout and styles |
+| `docs/js/main.js` | wires the page together |
+| `docs/js/hardware.js` | the flight computer: RAM + ECC + scrubber, SD card, FRAM, watchdog, serial ports, memory map |
+| `docs/js/ecc.js` | SECDED (72,64) decoder |
+| `docs/js/board3d.js` | 3D board, semantic zoom, picking, strikes |
+| `docs/js/missions.js` | the six missions |
+| `docs/js/os/linux-cfs.js` | OS adapter for Linux + cFS |
+| `docs/bzImage`, `initrd.gz` | Linux 6.8 (i386) and the root filesystem: busybox, 32-bit glibc, cFS with 13 apps + 2 libs |
+| `docs/libv86.js`, `v86.wasm`, `bios.bin`, `vgabios.bin` | v86 0.5.470 and SeaBIOS |
+| `docs/vendor/` | three.js r160 (MIT) |
+| `build/` | kernel config, toolchain file, VM `init`, `serbridge.c`, `memmap.c`, cFS additions (`fault_inj`, `tmr_lib`, `tmr_calc`, PSP watchdog), `build-initrd.sh` |
+| `test/` | VM tests in Node (`test-*.mjs`) and the page test in Chrome (`browser-lab.mjs`) |
+
+## FAULT_INJ (software fault injection)
+
+`build/cfs/apps/fault_inj` flips bits in other apps' memory on command, aimed by ELF segment or symbol. The page no longer uses it, since hits now go straight to the emulated hardware. It stays because it is what would work on real hardware, where nothing can flip memory from outside, and the VM tests use it.
 
 | Code | Command | Payload (little-endian) |
 |---|---|---|
@@ -39,214 +135,57 @@ The VM image was trimmed for this: libraries live only in `lib32/` (the i386 loa
 | 1 | RESET counters | none |
 | 2 | QUERY memory map | `App[20]` |
 | 3 | FLIP one byte | `App[20]`, `Region u8`, `BitMask u8`, `spare u16`, `Offset u32` |
-| 4 | FLIP_RANDOM | `App[20]`, `Region u8`, `spare u8`, `Count u16`, `Seed u32` (0 = time-based) |
+| 4 | FLIP_RANDOM | `App[20]`, `Region u8`, `spare u8`, `Count u16`, `Seed u32` |
 | 5 | FLIP_SYMBOL | `App[20]`, `Symbol[32]`, `Offset u32`, `BitMask u8`, `spare[3]` |
-| 6 | SET_ECC | `Enabled u8` (1 on, 0 off), `spare[3]` |
-| 7 | FLIP_TMR | `Region[20]`, `Copy u8` (0–2), `BitMask u8`, `spare u16`, `Offset u32`: hits one copy of a TMR_LIB region |
+| 6 | SET_ECC | `Enabled u8`, `spare[3]` (a simpler software ECC model, VM tests only) |
+| 7 | FLIP_TMR | `Region[20]`, `Copy u8`, `BitMask u8`, `spare u16`, `Offset u32` |
 
-Commands go to MID `0x18C0`; housekeeping comes back on `0x08C0` once a second. Regions: 0 code, 1 rodata, 2 data, 3 bss. App `CORE` targets the cFS executive itself. Offsets wrap to the region size, so the same (app, region, offset) always hits the same byte.
+Commands go to MID `0x18C0`; housekeeping comes back on `0x08C0`. Regions: 0 code, 1 rodata, 2 data, 3 bss. App `CORE` targets the cFS executive.
 
-**Simulated ECC.** The emulated PC has plain RAM, so error-correcting memory is modeled inside FAULT_INJ, standing in for the memory controller. With ECC on, a single-bit hit is corrected before software sees it (memory unchanged, counted, reported as an event); a multi-bit hit in one byte is detected but uncorrectable, so the data is corrupted and a critical event is raised. Corrections are treated as immediate, as if reads or scrubbing catch each flip before a second one lands in the same word. Housekeeping adds `EccEnabled` (byte 52), `EccCorrected` (u32 at 56) and `EccUncorrectable` (u32 at 60).
+Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight software process**, Health & Safety included. cFS on Linux runs every app as a thread of one process, so there is no memory isolation between apps.
 
-Tested in v86 (`test/test-fault.mjs`, 15/15 pass):
+## Tests
 
-- Flipping bit 7 of `SAMPLE_APP_Data` makes SAMPLE_APP's telemetry command counter jump from 0 to 128.
-- The same FLIP twice hits the same address and restores the original value.
-- 8 random hits in SAMPLE_APP's data: flight software keeps running.
-- 40 random hits in SAMPLE_APP's code, then commanding it: **the whole flight software process crashes**, Health & Safety included, and a restart comes back as a processor reset in ~3 s.
-
-- With ECC on: a 1-bit hit on the counter is corrected (stays 0), a 2-bit hit gets through (0 → 129) and is flagged uncorrectable, and the same 40 code hits that crashed everything are all corrected, so the flight software survives.
-
-The crash result is the point of the demo: on Linux, cFS runs every app as a thread in one process with no memory isolation between apps, so one corrupted app can take down everything. Real missions answer this with partitioned operating systems and an external hardware watchdog.
-
-To add it to a cFS tree: copy `apps/fault_inj` into `apps/`, and use the three files in `build/cfs/sample_defs/` (adds `fault_inj` to the cpu1 app list and startup script, and subscribes TO_LAB to `0x08C0`).
-
-## Hardware watchdog
-
-On a real spacecraft the watchdog is a separate chip: the flight software must keep "kicking" it, and if the kicks stop the chip resets the computer. cFS already has this design. Health & Safety arms the watchdog at startup (10 s timeout) and services it every cycle (about once a second) while the system is healthy. On the stock Linux PSP those calls are empty, so `build/cfs/psp/cfe_psp_watchdog.c` sends them to an onboard serial bus instead:
-
-| Line on `/dev/ttyS2` | Meaning |
-|---|---|
-| `WS<ms>` | set timeout |
-| `WE` / `WD` | enable / disable |
-| `WK` | kick |
-
-The page models the chip. If no kick arrives within the timeout it power-cycles the flight computer (the v86 instance is destroyed and a new one boots; v86's own `restart()` does not handle a bzImage boot). The VM's `init` boots straight into cFS when the kernel command line has `fsw=auto`, so the flight software comes back with no one at the keyboard, and cFS logs a power-on reset. The **Watchdog: ON/OFF** button disconnects the chip for the before/after comparison.
-
-Tested in v86 (`test/test-watchdog.mjs`, 9/9 pass):
-
-| Scenario | Result |
-|---|---|
-| Healthy | Health & Safety arms the chip (`WS10000`, `WE`) and kicks about once a second |
-| 40 code hits crash the flight software | Watchdog resets ~11 s later; cFS back ~12 s after that, logging a power-on reset |
-| Flight software hangs (`kill -STOP`) | Same: reset after ~10 s, back on its own |
-| Watchdog disconnected, flight software killed | Stays down |
-
-## Boot storage and latent damage
-
-The page keeps the flight computer's boot storage, the kernel and the root filesystem, in browser memory, the way a spacecraft keeps its software in flash. Every power-on boots from storage as it is at that moment. The filesystem is kept uncompressed (decompressed once at load) so a hit damages one file instead of breaking the whole archive.
-
-**Hit storage** flips one bit at a chosen file, offset and bit. The running system does not notice, because it already sits in RAM; the damage waits for the next boot. **Power cycle** reboots on ground command, **Restore storage** re-uploads the launch image, and the counter shows how many bits differ from it.
-
-The watchdog now runs from power-on with a 30 s boot window (Health & Safety tightens it to 10 s once up), so a computer that cannot boot gets reset again and again: a boot loop, which the page flags after two failed boots in a row.
-
-Tested in Chrome (`test/browser-storage.mjs`):
-
-| Storage hit (offset 0, bit 0) | Next boot |
-|---|---|
-| `cfs/cpu1/cf/cfe_test_tbl.tbl` (unused) | Normal |
-| `cfs/cpu1/cf/sample_app.so` | cFS logs `Could not load file:/cf/sample_app.so`, everything else runs |
-| `cfs/cpu1/core-cpu1` | ELF signature broken, the shell tries to run it as a script and fails: boot loop |
-| `kernel` + 20000, bit 3 | Boot loop |
-| Restore storage during the loop | Next watchdog reset boots clean |
-
-This sets up the next step, a protected golden image the boot loader can fall back to.
-
-## Two configurations: single computer, or TMR
-
-The **Configuration** menu switches between:
-
-- **1 computer: ECC + watchdog + reboot.** Everything above. A fault is survived by correcting it (ECC) or by rebooting (watchdog), with an outage of about 25 s.
-- **3 computers: TMR with voter.** Triple modular redundancy. Three identical flight computers run side by side, each with its own boot storage and watchdog. A voter outside them, like voting hardware, does three things:
-  - fans every ground command out to all three;
-  - each second compares what they report: is each one up, and do they agree on SAMPLE_APP's command counter (an application output)? The ground sees only the majority value, so one bad computer is masked with no outage;
-  - resyncs a computer that is down, or has disagreed with the other two for 12 s, by copying the full running state of a healthy one into it (v86 `save_state` / `restore_state`), the way TMR systems bring a failed unit back in step.
-
-Radiation controls (counter hits, code hits, storage hits, kill) act on the **target** computer only.
-
-Comparing raw telemetry would not work: the three computers are not clock-locked, so timestamps and sequence counts differ even when they agree. The voter compares a chosen application value instead and tolerates the few seconds between housekeeping reports.
-
-Measured in headless Chrome on a 2-core machine (`test/browser-modes.mjs`, 11/11 pass):
-
-| | Result |
-|---|---|
-| Boot, 1 computer / 3 computers | ~11 s / ~29 s |
-| Watchdog kicks with 3 computers running | ~0.85/s each, longest gap 1.3 s (limit 10 s) |
-| Snapshot size, save + restore | 39 MB, ~0.6 s |
-| 1-bit hit on B's counter | B shows 128, ground keeps 0; B outvoted and resynced from A in 0.67 s |
-| C's flight software killed | Resynced from A ~5 s later, no reboot, watchdog never fires |
-| Ground command after resyncs | Reaches all three |
-| Single mode, code hits | Watchdog reset, back on its own |
-
-Memory stays at 128 MB per computer: at 64 MB the 12.5 MB filesystem no longer fits the kernel's boot layout.
-
-## Software TMR inside one computer
-
-The hardware profile asks for TMR in the kernel: every critical state transition or calculation done in three independent memory partitions and voted, with a corrupted partition overwritten from the other two without a reboot. That is implemented as a cFS service layer, not in the Linux kernel:
-
-- **`libs/tmr_lib`** (a cFS library, loaded before the apps). `TMR_Alloc` creates a region as three separate memory mappings, each followed by a guard page, so one upset cannot reach two copies. `TMR_Vote` takes the bitwise majority of the three copies, `(a & b) | (a & c) | (b & c)`, and overwrites any copy that differs. `TMR_SetEnabled(false)` drops to one copy with no voting, for comparison.
-- **`apps/tmr_calc`** (TMR_CALC). A calculator the ground can check: every second `Step += 1; Sum += Step`, so `Sum` must equal `Step × (Step + 1) / 2`. Each of the three copies does its own calculation from its own state, then the copies are voted. Because the sum accumulates, an error that gets through stays visible. Commands on `0x18C1` (0 NOOP, 1 RESET, 2 SET_TMR); results on `0x08C1` once a second, including each copy's value before the vote.
-- **FAULT_INJ `FLIP_TMR`** hits one chosen copy.
-
-The page's calculator panel shows step, the correct sum, the reported (voted) sum with ✓/✗, the three copies and which one was just outvoted, and buttons to hit each copy, both copies 1 and 2, toggle TMR, and reset.
-
-Tested in v86 (`test/test-tmr.mjs`, 12/12) and in Chrome (`test/browser-calc.mjs`, 10/10):
-
-| Scenario | Result |
-|---|---|
-| Hit copy 2 (sum field) | Copy 2 computes 20 instead of 36, is outvoted and repaired; answer stays right; no reboot |
-| Hit copy 3 (step field) | Repaired the same way |
-| Same bit in copies 1 and 2 | The wrong value wins the vote and the good copy is "repaired" to it; the sum stays wrong from then on |
-| TMR off, hit copy 2 | No effect (copy unused) |
-| TMR off, hit copy 1 | Answer wrong for good |
-| TMR back on | Copies agree again but past damage stays: TMR cannot undo an error it never saw |
-
-Limits worth stating: the data is triplicated but the code and the CPU are not, so a hit in the calculation code itself is not covered (ECC, the watchdog, or three computers cover that); and with ECC on, single-bit hits are corrected before TMR ever sees them.
-
-## 3D hardware view and physical radiation hits
-
-The top of the page shows each flight computer as a circuit board with a RAM chip, a flash chip, a CPU and a watchdog. Drag to rotate, scroll or pinch to zoom, click or tap a chip to fire a particle. In TMR mode the three boards sit side by side (front to back on narrow screens).
-
-**Matching hardware to software.** A particle hits physical memory, not a process. Which software suffers depends on where the OS has placed it at that moment, so the page needs the same view the OS has:
-
-- `build/memmap.c` runs in the VM on a fourth serial port (ttyS3, a diagnostic port separate from the radio link). On request it walks every process's `/proc/<pid>/maps` and `/proc/<pid>/pagemap`, plus `/proc/iomem` for the kernel image, and reports runs of physical pages with their owner: process, module, and code/rodata/data/bss/heap/stack, the kernel, and TMR_LIB partitions (TMR_LIB records each copy's address in `/tmp/tmr_regions`).
-- The page refreshes this map when cFS comes up, after a resync, and every 15 s, and paints it on the RAM chip: **one pixel per 4 KB page**, coloured by owner. Hovering shows the physical address and what lives there.
-- A click becomes a physical address. The RAM chip shows one row of 256 pixels per MB: the pixel picks the page, the position inside the pixel picks the byte and bit, so the same spot always hits the same bit. The page flips it directly in the emulated PC's RAM (`write_memory`), from outside the computer. No flight software takes part, unlike FAULT_INJ.
-- ECC for these hits is modeled where it belongs, in the memory controller: with ECC on, a 1-bit upset is corrected before software sees it and a 2-bit upset (the "2 adjacent bits" particle) lands and is counted as uncorrectable.
-- The flash chip maps the boot storage (kernel, then the filesystem image) the same way; a hit there is latent until the next boot, and damaged pages turn red. CPU and watchdog hits are reported as not modeled.
-
-FAULT_INJ stays for precise, repeatable software fault injection (and it is what would work on real hardware, where nothing can flip memory from outside). The beam is emulator-based fault injection.
-
-COM4 needs one workaround: Linux runs a loopback self-test on ttyS3 that v86's UART fails, so `init` declares it with `setserial /dev/ttyS3 uart 16550A`.
-
-Tested in v86 (`test/test-phys.mjs`, 8/8) and in Chrome (`test/browser-beam.mjs`, 8/8):
-
-| Target | Result |
-|---|---|
-| Memory map | ~880 runs in 2.5 s; of 32,768 pages, cFS owns ~1,600 (6.3 MB), the kernel image ~920; ~29,400 are free |
-| SAMPLE_APP's counter (virtual `0xb79…0c0` → physical `0x49f…0c0`) | Beam flips bit 4: its telemetry counter goes 0 → 16 |
-| TMR copy 2 | Outvoted and repaired |
-| Free memory | No effect, which is where most random hits land |
-| Flash, kernel image | Storage damaged; takes effect at the next boot |
-| CPU | Reported as not modeled |
-| TMR mode, board B | The hit lands on computer B |
-
-A finding for the paper: the three TMR copies were placed on **adjacent physical pages** (e.g. `0xb71`, `0xb72`, `0xb73`). Separate virtual allocations do not guarantee physical separation, so a multi-cell upset or a single failing chip could take out two copies at once; real systems place copies in different chips or banks.
-
-three.js r160 is bundled in `docs/vendor/` (MIT licence included) so the demo works offline.
-
-## Memory microscope
-
-Below the 3D boards is a live bit view of the target computer's real RAM, read from the emulator's physical memory every 300 ms.
-
-- **TMR calculator copies**: the `step` and `sum` words of TMR_CALC's three memory partitions, side by side. Bits that change flash yellow, so you can watch the copies count up together.
-- **Click any bit to flip it.** The flip goes through the same path as a beam hit, so hardware ECC (when on) still corrects it. Flip one bit in copy 2 and you see it turn red, then the software vote rewrites it a moment later.
-- **A 3D beam hit on RAM** opens the microscope at that byte with the hit bit outlined. Use **◀ / ▶ 64 bytes** to look around, and **Last hit** to jump back.
-- The header names what the bytes belong to (process, mapping, virtual address), from the same page-table map the 3D view uses.
-
-## How it fits together
-
-```
-browser JS  --ttyS1 (hex lines)-->  serbridge  --UDP 1234-->  CI_LAB  --> cFS software bus
-browser JS  <--ttyS1 (hex lines)--  serbridge  <--UDP 2234--  TO_LAB  <-- cFS software bus
-browser JS  <--ttyS0-->  busybox shell (console, start/stop cFS)
-browser JS  <--ttyS2---  cFS Health & Safety -> PSP watchdog calls (hardware watchdog chip)
-browser JS  <--ttyS3-->  memmap (physical memory map, on request)
-browser JS  ---------->  emulated RAM / flash directly (radiation hits from the 3D view)
-```
-
-- `C<hex>\n` from the page = one command packet; `T<hex>\n` from the VM = one telemetry packet.
-- Command message IDs: ES `0x1806`, TO_LAB `0x1880`. Telemetry: ES HK `0x0800`, events `0x0808`.
-
-## What's in `docs/`
-
-| File | Size | What |
+| Test | Where | Result |
 |---|---|---|
-| `bzImage` | 1.5 MB | Linux 6.8 kernel, i386, minimal config |
-| `initrd.gz` | 5.4 MB | busybox + 32-bit glibc + cFS (cFE, OSAL, PSP, 13 apps) + serbridge |
-| `libv86.js`, `v86.wasm` | 2.4 MB | v86 0.5.470 |
-| `bios.bin`, `vgabios.bin` | 0.2 MB | SeaBIOS |
+| `test/test-cfs.mjs` | Node + v86 | 12/12: boot, apps, threads, telemetry, commands, restart, reload |
+| `test/test-fault.mjs` | Node + v86 | 15/15: FAULT_INJ |
+| `test/test-watchdog.mjs` | Node + v86 | 9/9 |
+| `test/test-tmr.mjs` | Node + v86 | 12/12 |
+| `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
+| `test/browser-lab.mjs` | Chrome | 23/23 (below) |
 
-## Verified (headless, `test/test-cfs.mjs`, 12/12 pass)
+`browser-lab.mjs` checks the following:
+- Zooming to a TMR copy reaches readable bits, and a real click flips exactly the bit under the pointer.
+- The vote repairs a flipped copy; with TMR off the answer goes wrong.
+- Every ECC outcome: corrected, detected in free memory, silent 3-bit, scrub, ECC off revealing hidden errors, and a 2-bit machine check resetting the computer.
+- The watchdog recovers a killed flight software.
+- The particle shower lands its bits.
+- An SD hit leads to a boot loop, and restoring the card recovers it.
+- Missions 2 and 6 tick their goals off by themselves.
 
-| Check | Result |
-|---|---|
-| Linux boots in v86 | ~10 s |
-| cFS reaches OPERATIONAL | ~4 s after launch |
-| Apps loaded with dlopen | 13 apps + 2 libs |
-| Threads / message queues | 26 threads, 23 POSIX queues, ~6 MB RSS |
-| Telemetry cFS → UDP → serial → JS | yes |
-| Commands JS → serial → UDP → cFS (ES No-op) | yes |
-| Scheduler keeps real-time cadence | ES HK every 4.0 s as configured |
-| ES Restart App | works |
-| ES Reload App from a new `.so` (update path) | works |
-| `kill -9` + restart (watchdog path) | back to OPERATIONAL in ~3 s, cFS reports a processor reset |
+Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome node test/browser-lab.mjs`.
 
 ## Gotchas found while porting
 
-- **Kernel needs `CONFIG_RT_MUTEXES` (PI futexes) and `CONFIG_COMPAT_32BIT_TIME`.** OSAL creates priority-inheritance mutexes; 32-bit glibc probes PI support through the legacy `futex` syscall. Without both, `pthread_mutex_init` fails with "Operation not supported" and OSAL refuses to start.
+- **Kernel needs `CONFIG_RT_MUTEXES` and `CONFIG_COMPAT_32BIT_TIME`**, or OSAL's priority-inheritance mutexes fail with "Operation not supported".
 - **TO_LAB sends telemetry to UDP 2234**, not 1235.
-- **ES Reload only accepts cFS virtual paths** like `/cf/app.so`. A path like `/tmp/app.so` fails with `CFE_ES_FILE_IO_ERR`.
-- OSAL unlinks queue names, so `/dev/mqueue` looks empty even when queues are live.
+- **ES Reload only accepts cFS virtual paths** like `/cf/app.so`.
+- **COM4 fails Linux's UART loopback test** in v86, so `init` declares it with `setserial /dev/ttyS3 uart 16550A`.
+- **v86 always loads the initrd at 64 MB**, so 64 MB of RAM needs the image size added.
+- **v86's `read_memory` returns a live view** of guest RAM: copy it before comparing later.
+- **three.js (WebGL2) cannot resize a texture's storage**: a canvas texture that changes size needs a new texture.
 
 ## Rebuilding
 
-`build/` has the pieces: the kernel config (`kernel/config-i386-v86`), the cFS toolchain file (`cfs/toolchain-i686-v86.cmake`, `-m32`), the VM `init`, `serbridge.c`, and `build-initrd.sh`. Built on Ubuntu 24.04 with `gcc-multilib`.
-
-cFS build: copy the toolchain file into `sample_defs/`, then
+Built on Ubuntu 24.04 with `gcc-multilib`. Copy the toolchain file into `sample_defs/`, then:
 
 ```
 cmake -S cfe -B build-v86 -DSIMULATION=i686-v86 -DMISSIONCONFIG=sample -DCFE_EDS_ENABLED=OFF \
       -DCMAKE_BUILD_TYPE=release -DCMAKE_INSTALL_PREFIX=/exe -DENABLE_UNIT_TESTS=FALSE
 make -C build-v86 mission-install
 ```
+
+Then run `build/build-initrd.sh`. Libraries live only in `lib32/` and modules are stripped, which keeps the root filesystem at 7.7 MB.
+
+*History:* an earlier version also had a three-computer TMR mode with an external voter and state resync (`save_state` / `restore_state`, ~0.6 s for a 39 MB snapshot). It was removed to keep the page focused on one computer; see the git history before the restructure.
