@@ -40,6 +40,15 @@ The flight computer boots into cFS in about 14 s. No special server headers are 
 | Watchdog | external | External chip on a serial bus. Runs from power-on with a 30 s boot window; Health & Safety tightens it to 10 s. |
 | OS | FreeRTOS | Linux (see "OS adapters" for trying others) |
 
+## The view: a CubeSat in orbit
+
+The page opens on the satellite floating above Earth's limb, turning slowly. Drag to rotate it. Zoom with the wheel, a pinch or the slider at the bottom; the slider shows how far in you are (orbit, computer, memory, bytes, bits).
+- **On the way in**: the hull turns to x-ray and the real flight computer board appears inside it.
+- **The magnet**: once inside, the view is pulled onto the nearer memory chip (RAM or SD card) and turns to look down on it. You can still tilt up to about 50° from vertical at the chip, and 30° at the bits.
+- **Limits**: the deepest zoom shows about 24 rows of bits. Deep in, the magnet lets go so you can roam over the memory.
+- **Clicking fires a particle** through the point you aim at. It arrives from the upper left of your view, so its track is visible and the angle it meets the chip at depends on how you hold the satellite.
+- **The panels** float over the scene: protection and particles, missions, status, event log. On a phone they start folded.
+
 ## Semantic zoom: from the board to single bits
 
 Each memory chip's top *is* the memory, laid out like a hex dump. Every 4 KB page is a tile 16 bytes wide and 256 rows tall, and each byte is 8 bits across with the most significant bit on the left. The same point on the chip is always the same byte and bit. Keep zooming (wheel, pinch, or the + button):

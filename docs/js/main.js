@@ -48,7 +48,6 @@ function renderStatus() {
   $("t-tmr").disabled = !fc.operational;
   renderSurvival();
   $("where").textContent = board ? (board.hover || (board.level !== "none" ? board.center() : "")) : "";
-  $("zoomlevel").textContent = board ? { none: "board", bytes: "bytes (brightness = value)", bits: "bits", text: "bits: click one to flip it" }[board.level] : "";
 }
 // how the computer is holding up under background radiation
 function renderSurvival() {
@@ -82,6 +81,7 @@ async function start() {
   fc.setWatchdog(desired.watchdog);
   board = createBoard({
     host: $("view3d"), fc, os, particle: () => desired.particle,
+    zoomInput: $("zoom"), ticks: [...document.querySelectorAll("#ticks span")], stageEl: $("stage"),
     onStrike(s) {
       const r = s.result;
       let text;
@@ -131,9 +131,6 @@ $("bg-warp").onchange = () => applySetup({ warp: +$("bg-warp").value });
 $("bg-reset").onclick = () => { bg.resetStats(); renderSurvival(); };
 $("power").onclick = () => { fc.log("GROUND: power cycle commanded"); fc.powerCycle("ground command"); };
 $("restore").onclick = () => fc.restoreSd();
-$("z-home").onclick = () => board.home();
-$("z-in").onclick = () => board.zoomBy(1 / 8);
-$("z-out").onclick = () => board.zoomBy(8);
 $("facts").addEventListener("click", (e) => {
   const c = e.target.closest("[data-copy]"); if (c) zoomToCopy(+c.dataset.copy);
   if (e.target.id === "calc-reset") fc.send(commands.calcReset());

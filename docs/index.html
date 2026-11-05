@@ -2,156 +2,185 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Radiation Lab: cFS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radiation Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;500;600&display=swap">
 <style>
-  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#d6dde6; --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --pink:#ff7ad9; color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; padding:16px max(16px, env(safe-area-inset-right,0px)) 32px max(16px, env(safe-area-inset-left,0px)); }
-  h1 { font-size:20px; margin:0 0 2px; letter-spacing:-.01em; }
-  .sub { color:var(--dim); margin:0 0 12px; max-width:80ch; }
-  .dim { color:var(--dim); }
-  button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
-  button:hover:not(:disabled) { border-color:var(--acc); }
-  button:focus-visible, summary:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
-  button:disabled { opacity:.45; cursor:default; }
-  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .pink { color:var(--pink); }
-
-  /* control bar */
-  .bar { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:12px; position:sticky; top:0; z-index:5; }
-  .status { font-weight:650; min-width:12ch; }
-  .status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--dim); margin-right:7px; vertical-align:1px; }
-  .status.ok::before { background:var(--ok); } .status.warn::before { background:var(--warn); } .status.bad::before { background:var(--bad); }
-  .group { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  .group > .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
-  .toggle b { font-weight:650; color:var(--dim); }
-  .toggle[aria-pressed="true"] { border-color:var(--ok); } .toggle[aria-pressed="true"] b { color:var(--ok); }
-  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
-  .seg button { border:0; border-radius:0; border-right:1px solid var(--line); }
-  .seg button:last-child { border-right:0; }
-  .seg button[aria-pressed="true"] { background:#1f2a37; color:#fff; box-shadow: inset 0 -2px 0 var(--acc); }
-  .spacer { flex:1; }
-  @media (max-width: 600px) {
-    .bar { position:static; gap:6px 10px; padding:8px 10px; }
-    .bar .status { flex-basis:100%; }
-    .bar button { padding:5px 8px; }
+  /* Full-window space scene; every control floats over it in a glass panel. */
+  :root {
+    --void:#03040a; --glass:rgba(10,13,22,.72); --line:rgba(124,196,255,.16); --fg:#e9ecf5; --dim:#8c93a8;
+    --ok:#3fb950; --warn:#d29922; --bad:#ff5a4f; --acc:#7cc4ff; --pink:#ff7ad9;
+    --mono:"Martian Mono", ui-monospace, Menlo, Consolas, monospace; --body:"Hanken Grotesk", system-ui, sans-serif;
+    color-scheme: dark;
   }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--void); color:var(--fg); font:14px/1.45 var(--body); overflow:hidden; }
+  button, select { font:inherit; color:var(--fg); background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--acc); }
+  button:disabled { opacity:.45; cursor:default; }
+  button:focus-visible, select:focus-visible, summary:focus-visible, input:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select { padding:6px 8px; max-width:100%; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .pink { color:var(--pink); } .dim { color:var(--dim); }
 
-  /* main layout: board on the left, missions on the right */
-  .layout { display:grid; grid-template-columns:minmax(0, 1fr) 360px; gap:12px; align-items:start; }
-  @media (max-width: 960px) { .layout { grid-template-columns:minmax(0, 1fr); } }
-  .view3d { position:relative; height:clamp(320px, 62vh, 760px); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#06080c; touch-action:none; }
-  @media (max-width: 600px) { .view3d { height:clamp(300px, 78vw, 460px); } }
-  .view3d canvas { display:block; width:100%; height:100%; cursor:crosshair; }
-  .hud { position:absolute; pointer-events:none; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; }
-  .hud.where { left:8px; top:8px; right:8px; background:rgba(13,17,23,.9); border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
-  .hud.where:empty { display:none; }
-  .hud.level { left:8px; bottom:8px; color:var(--dim); background:rgba(13,17,23,.75); border-radius:6px; padding:3px 8px; }
-  .hud.zoom { right:8px; bottom:8px; pointer-events:auto; display:flex; gap:4px; }
-  .hud.zoom button { width:34px; height:34px; padding:0; font-size:16px; background:rgba(22,27,34,.92); }
-  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--dim); margin:8px 0 4px; }
-  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
-  .hint-line { font-size:12px; color:var(--dim); margin:0 0 6px; }
-  #beamlog { font:12px/1.45 ui-monospace, Menlo, Consolas, monospace; min-height:1.45em; word-break:break-word; margin:6px 0 10px; }
-  button.link { background:none; border:0; color:var(--acc); padding:0; text-decoration:underline; font:inherit; }
-  .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:6px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:13px; font-variant-numeric:tabular-nums; }
-  .facts .k { display:block; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-  .facts .calc { grid-column:1 / -1; }
-  .survival { grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); }
-  .subhead { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--fg); margin:12px 0 6px; font-weight:600; }
-  .subhead .dim { text-transform:none; letter-spacing:0; font-weight:400; }
-  .bgrow { flex-basis:100%; }
-  select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; font:inherit; max-width:100%; }
+  #view3d { position:fixed; inset:0; touch-action:none; }
+  #view3d canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+
+  .panel { position:fixed; background:var(--glass); border:1px solid var(--line); border-radius:14px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); z-index:2; max-height:calc(100% - 140px); overflow:auto; }
+  .panel > summary { list-style:none; cursor:pointer; padding:10px 14px; font:500 11px/1.4 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--dim); display:flex; justify-content:space-between; gap:10px; align-items:center; }
+  .panel > summary::-webkit-details-marker { display:none; }
+  .panel > summary::after { content:"+"; color:var(--dim); }
+  .panel[open] > summary::after { content:"–"; }
+  .panel .body { padding:0 14px 14px; display:flex; flex-direction:column; gap:10px; }
+
+  #controls { left:max(16px, env(safe-area-inset-left, 0px)); top:calc(16px + env(safe-area-inset-top, 0px)); width:330px; }
+  #status-panel { left:max(16px, env(safe-area-inset-left, 0px)); bottom:calc(96px + env(safe-area-inset-bottom, 0px)); width:330px; max-height:42vh; }
+  #missions-panel { right:max(16px, env(safe-area-inset-right, 0px)); top:calc(76px + env(safe-area-inset-top, 0px)); width:340px; }
+  #log-panel { right:max(16px, env(safe-area-inset-right, 0px)); bottom:calc(96px + env(safe-area-inset-bottom, 0px)); width:340px; max-height:40vh; }
+
+  .status { font:600 12px/1.4 var(--mono); letter-spacing:.06em; }
+  .status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--dim); margin-right:8px; vertical-align:1px; }
+  .status.ok::before { background:var(--ok); box-shadow:0 0 8px var(--ok); } .status.warn::before { background:var(--warn); } .status.bad::before { background:var(--bad); box-shadow:0 0 8px var(--bad); }
+  .lbl { font:500 10px/1.4 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+  .row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .toggle b { font-weight:600; color:var(--dim); }
+  .toggle[aria-pressed="true"] { border-color:rgba(63,185,80,.6); } .toggle[aria-pressed="true"] b { color:var(--ok); }
+  .seg { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:4px; }
+  .seg button { padding:7px 8px; }
+  .seg button[aria-pressed="true"] { background:rgba(124,196,255,.14); border-color:var(--acc); }
+
+  .hud { position:fixed; z-index:2; pointer-events:none; font:11px/1.6 var(--mono); letter-spacing:.06em; color:var(--dim); }
+  .hud.top { right:max(16px, env(safe-area-inset-right, 0px)); top:calc(18px + env(safe-area-inset-top, 0px)); text-align:right; max-width:min(520px, 50vw); }
+  .hud.top b { color:var(--fg); font-weight:500; letter-spacing:.14em; display:block; }
+  #where { word-break:break-word; }
+
+  .bottom { position:fixed; z-index:2; left:50%; transform:translateX(-50%); bottom:calc(18px + env(safe-area-inset-bottom, 0px)); width:min(620px, calc(100% - 32px)); display:flex; flex-direction:column; gap:8px; }
+  #beamlog { font:11px/1.5 var(--mono); color:var(--fg); text-align:center; min-height:1.5em; text-shadow:0 1px 8px var(--void); word-break:break-word; }
+  #beamlog button.link { background:none; border:0; color:var(--acc); padding:0; text-decoration:underline; font:inherit; }
+  .zoom input { -webkit-appearance:none; appearance:none; width:100%; height:26px; background:transparent; cursor:ew-resize; margin:0; }
+  .zoom input::-webkit-slider-runnable-track { height:2px; background:linear-gradient(90deg, var(--fg) var(--z, 0%), rgba(124,196,255,.25) var(--z, 0%)); border-radius:2px; }
+  .zoom input::-moz-range-track { height:2px; background:rgba(124,196,255,.25); }
+  .zoom input::-moz-range-progress { height:2px; background:var(--fg); }
+  .zoom input::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; margin-top:-8px; border-radius:50%; background:var(--void); border:2px solid var(--fg); box-shadow:0 0 0 6px rgba(124,196,255,.12); }
+  .zoom input::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:var(--void); border:2px solid var(--fg); }
+  .ticks { position:relative; height:14px; font:9px/1 var(--mono); letter-spacing:.04em; color:var(--dim); }
+  .ticks span { position:absolute; transform:translateX(-50%); white-space:nowrap; transition:color .3s; }
+  .ticks span.on { color:var(--fg); }
+  .ticks span:first-child { transform:none; } .ticks span:last-child { transform:translateX(-100%); }
+
+  .facts { display:grid; gap:8px; font-size:13px; font-variant-numeric:tabular-nums; }
+  .facts .k { display:block; font:500 10px/1.4 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
   .facts button { padding:2px 8px; margin:4px 4px 0 0; font-size:12px; }
   .facts button.hit { border-color:var(--bad); color:var(--bad); }
+  .survival { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim); }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
 
   /* missions */
-  .side { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
-  .side h2 { font-size:15px; margin:0 0 2px; }
-  .side > p { margin:0 0 10px; font-size:13px; }
+  #missions h2 { display:none; }
+  #missions > p { margin:0 0 6px; font-size:12px; color:var(--dim); }
   .mission { border-top:1px solid var(--line); }
-  .mhead { width:100%; display:flex; justify-content:space-between; gap:8px; background:none; border:0; border-radius:0; padding:10px 2px; text-align:left; font-weight:600; }
+  .mhead { width:100%; display:flex; justify-content:space-between; gap:8px; background:none; border:0; border-radius:0; padding:9px 0; text-align:left; font-weight:600; }
   .mstate { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
   .mission.complete .mstate { color:var(--ok); }
-  .mbody { padding:0 2px 12px; font-size:13px; }
+  .mbody { padding:0 0 12px; font-size:13px; }
   .mbody p { margin:0 0 8px; }
   .mbody .setup { width:100%; text-align:left; margin-bottom:8px; border-color:var(--acc); }
-  .mbody .row { display:flex; gap:6px; align-items:center; margin-bottom:8px; color:var(--dim); }
+  .mbody .row { margin-bottom:8px; color:var(--dim); }
   .goals { list-style:none; margin:0 0 8px; padding:0; }
   .goals li { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
   .goals .box { flex:none; width:16px; height:16px; border:1.5px solid var(--dim); border-radius:4px; font-size:11px; line-height:13px; text-align:center; margin-top:2px; }
-  .goals li.met { color:var(--dim); } .goals li.met .box { background:var(--ok); border-color:var(--ok); color:#0d1117; }
+  .goals li.met { color:var(--dim); } .goals li.met .box { background:var(--ok); border-color:var(--ok); color:#03040a; }
   .goals li.opt { font-style:italic; }
-  details summary { cursor:pointer; color:var(--acc); font-size:13px; padding:2px 0; }
-  details p { color:var(--fg); margin:4px 0 6px; }
-  .reset-progress { margin-top:10px; font-size:12px; color:var(--dim); }
+  details.hint summary, details.why summary { cursor:pointer; color:var(--acc); font-size:12px; padding:2px 0; }
+  details.hint p, details.why p { margin:4px 0 6px; }
+  .reset-progress { margin-top:8px; font-size:12px; color:var(--dim); }
 
-  /* logs */
-  .logs { margin-top:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
-  .logs h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
-  pre { margin:0; max-height:260px; overflow:auto; font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
-  .logs details { margin-top:8px; }
-  footer { color:var(--dim); font-size:12px; margin-top:14px; max-width:90ch; }
+  pre { margin:0; max-height:28vh; overflow:auto; font:11px/1.5 var(--mono); white-space:pre-wrap; word-break:break-word; color:var(--dim); }
+  #log-panel details summary { cursor:pointer; color:var(--acc); font-size:12px; }
+
+  @media (max-width: 760px) {
+    .panel { max-height:calc(100% - 200px); }
+    #controls, #status-panel, #missions-panel, #log-panel { width:calc(100% - 32px); left:max(16px, env(safe-area-inset-left, 0px)); right:auto; }
+    #controls { top:calc(12px + env(safe-area-inset-top, 0px)); }
+    #missions-panel { top:auto; bottom:calc(140px + env(safe-area-inset-bottom, 0px)); }
+    #status-panel, #log-panel { display:none; }
+    .ticks span:nth-child(2), .ticks span:nth-child(4) { display:none; }
+    .hud.top { top:auto; bottom:calc(92px + env(safe-area-inset-bottom, 0px)); left:16px; right:16px; max-width:none; text-align:center; }
+  }
 </style>
 </head>
 <body>
-<h1>Radiation vs. a CubeSat flight computer</h1>
-<p class="sub">NASA cFS on Linux, running live in your browser on an emulated ISISPACE iOBC-class board (64 MB SDRAM, SD card, FRAM, watchdog). Fire particles at the chips, then zoom in until you can see, and flip, single bits.</p>
+<div id="view3d" aria-label="A CubeSat in orbit with its flight computer inside. Drag to rotate, scroll or pinch to zoom, click to fire a particle."></div>
 
-<div class="bar" role="toolbar" aria-label="Controls">
-  <span id="status" class="status" aria-live="polite">loading…</span>
-  <div class="group"><span class="lbl">Protection</span>
-    <button id="t-ecc" class="toggle" aria-pressed="false">ECC <b>OFF</b></button>
-    <button id="t-wd" class="toggle" aria-pressed="true">Watchdog <b>ON</b></button>
-    <button id="t-tmr" class="toggle" aria-pressed="true" disabled>Software TMR <b>ON</b></button>
+<details class="panel" id="controls" open>
+  <summary><span id="status" class="status" aria-live="polite">loading…</span></summary>
+  <div class="body">
+    <div><div class="lbl">Protection</div>
+      <div class="row">
+        <button id="t-ecc" class="toggle" aria-pressed="false">ECC <b>OFF</b></button>
+        <button id="t-wd" class="toggle" aria-pressed="true">Watchdog <b>ON</b></button>
+        <button id="t-tmr" class="toggle" aria-pressed="true" disabled>TMR <b>ON</b></button>
+      </div>
+    </div>
+    <div><div class="lbl">Particle</div>
+      <div class="seg" id="particle"><button data-p="bit" title="Flips exactly the cell you aim at">single bit</button><button data-p="light" title="Flips a cell only when it comes in steeply">light ion</button><button data-p="heavy" aria-pressed="true" title="Flips a line of cells at low angles">heavy ion</button><button data-p="flare" title="48 particles at once, from random directions">flare burst</button></div>
+    </div>
+    <div><div class="lbl">Background radiation</div>
+      <div class="row">
+        <button id="bg-on" class="toggle" aria-pressed="false">Background <b>OFF</b></button>
+        <select id="bg-env" aria-label="Environment"></select>
+        <select id="bg-warp" aria-label="Time warp"></select>
+      </div>
+    </div>
+    <div class="row"><button id="power">Power cycle</button><button id="restore">Restore SD card</button><button id="bg-reset">Reset stats</button></div>
   </div>
-  <div class="group"><span class="lbl">Particle</span>
-    <div class="seg" id="particle"><button data-p="bit" title="Flips exactly the cell you aim at">single bit</button><button data-p="light" title="Flips a cell only when it comes in steeply">light ion</button><button data-p="heavy" aria-pressed="true" title="Flips a line of cells at low angles">heavy ion</button><button data-p="flare" title="48 particles at once, from random directions">flare burst</button></div>
-  </div>
-  <span class="spacer"></span>
-  <div class="group"><button id="power">Power cycle</button><button id="restore">Restore SD card</button></div>
-  <div class="group bgrow"><span class="lbl">Background radiation</span>
-    <button id="bg-on" class="toggle" aria-pressed="false">Background <b>OFF</b></button>
-    <select id="bg-env" aria-label="Environment"></select>
-    <select id="bg-warp" aria-label="Time warp"></select>
-    <button id="bg-reset">Reset stats</button>
-  </div>
-</div>
+</details>
 
-<div class="layout">
-  <section aria-label="Flight computer">
-    <div class="view3d" id="view3d">
-      <div class="hud where" id="where"></div>
-      <div class="hud level">zoom: <span id="zoomlevel">board</span></div>
-      <div class="hud zoom"><button id="z-home" title="Whole board" aria-label="Whole board">⌂</button><button id="z-out" title="Zoom out" aria-label="Zoom out">−</button><button id="z-in" title="Zoom in" aria-label="Zoom in">+</button></div>
-    </div>
-    <div class="legend" aria-label="Memory colours">
-      <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core, heap, stacks</span>
-      <span><i style="background:#2ea043"></i>cFS apps</span><span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies 1–3</span>
-      <span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#3b4048"></i>other processes</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
-      <span><i style="background:#ff3cc8"></i>flipped cell ECC is hiding / damaged SD byte</span><span><i style="background:#e3b341"></i>bit just changed</span><span><i style="background:#f85149"></i>just hit</span>
-    </div>
-    <p class="hint-line">Drag to rotate · scroll or pinch to zoom (keep going: pages, bytes, then bits) · click or tap a chip to fire: the particle flies along your line of sight, so tilt the board for a low-angle hit</p>
-    <p id="beamlog" aria-live="polite"></p>
+<details class="panel" id="status-panel">
+  <summary>Status</summary>
+  <div class="body">
     <div class="facts" id="facts"></div>
-    <h3 class="subhead">Survival under background radiation <span class="dim">(radiation is time-warped; the software runs in real time)</span></h3>
+    <div class="lbl">Survival under background radiation (time-warped)</div>
     <div class="facts survival" id="survival"></div>
-  </section>
-  <aside class="side" id="missions" aria-label="Missions"></aside>
-</div>
+    <div class="legend" aria-label="Memory colours">
+      <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core</span><span><i style="background:#2ea043"></i>cFS apps</span>
+      <span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies</span><span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
+      <span><i style="background:#ff3cc8"></i>hidden by ECC / damaged SD</span><span><i style="background:#e3b341"></i>just changed</span><span><i style="background:#f85149"></i>just hit</span>
+    </div>
+  </div>
+</details>
 
-<section class="logs" aria-label="Logs">
-  <h2>Event log</h2>
-  <pre id="evt"></pre>
-  <details id="con-box"><summary>Console (ttyS0)</summary><pre id="con"></pre></details>
-  <details id="tlm-box"><summary>Telemetry packets by message ID</summary><pre id="tlm"></pre></details>
-</section>
-<footer>The emulator is v86 (a 32-bit PC), so the CPU is x86 rather than the iOBC's ARM9; memory, storage, FRAM and watchdog behave like the real parts. Source and notes: <a href="https://github.com/suisarbre/shadowy-spooky-haunting" style="color:var(--acc)">github.com/suisarbre/shadowy-spooky-haunting</a>.</footer>
+<details class="panel" id="missions-panel" open>
+  <summary>Missions</summary>
+  <div class="body" id="missions"></div>
+</details>
+
+<details class="panel" id="log-panel">
+  <summary>Event log</summary>
+  <div class="body">
+    <pre id="evt"></pre>
+    <details id="con-box"><summary>Console (ttyS0)</summary><pre id="con"></pre></details>
+    <details id="tlm-box"><summary>Telemetry packets</summary><pre id="tlm"></pre></details>
+  </div>
+</details>
+
+<div class="hud top"><b id="stage">SATELLITE</b><span id="where"></span></div>
+
+<div class="bottom">
+  <p id="beamlog" aria-live="polite"></p>
+  <div class="zoom">
+    <input id="zoom" type="range" min="0" max="1000" value="0" aria-label="Zoom" aria-valuetext="Satellite">
+    <div class="ticks" id="ticks"><span>ORBIT</span><span>COMPUTER</span><span>MEMORY</span><span>BYTES</span><span>BITS</span></div>
+  </div>
+</div>
 
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110502";
+window.BUILD = "2026110503";
+// on a phone, start with the panels folded so the satellite is in view
+if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {
   const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "missions", "radiation", "os/linux-cfs"];
   const map = { imports: { three: "./vendor/three.module.min.js" + v } };

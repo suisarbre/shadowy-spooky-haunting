@@ -92,7 +92,7 @@ await ev(() => sim.applySetup({ ecc: false }));
 // ---- background radiation ----
 await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 604800 }); });
 await sleep(6000);
-r = await ev(() => ({ ...sim.bg.s, survival: document.getElementById("survival").innerText.replace(/\s+/g, " ") }));
+r = await ev(() => ({ ...sim.bg.s, survival: document.getElementById("survival").textContent.replace(/\s+/g, " ") }));
 await ev(() => { sim.applySetup({ bg: false }); sim.fc.restoreSd(); });
 result("background radiation: random strikes over the board, mission clock runs", r.strikes > 100 && r.ram > 10 && r.missionS > 30 * 86400 && /mission time/i.test(r.survival), `${r.strikes} strikes, ${r.ram} on RAM, ${r.bits} bits · ${r.survival.slice(0, 160)}`);
 if (!(await ev(() => sim.fc.operational))) await up();
