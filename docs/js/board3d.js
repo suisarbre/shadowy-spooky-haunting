@@ -255,7 +255,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       X0 = Math.min(X0, p.X); X1 = Math.max(X1, p.X); Y0 = Math.min(Y0, p.Y); Y1 = Math.max(Y1, p.Y);
     }
     // at most this many cells across and down, centred on the middle of the screen, so a refresh stays cheap
-    const unit = level === "bytes" ? 8 : 1, [capX, capY] = { bytes: [1024, 1024], bits: [640, 640], text: [140, 100] }[level];
+    // (bytes covers everything in view and samples it down; bits and text are capped)
+    const unit = level === "bytes" ? 8 : 1, [capX, capY] = { bytes: [8192, 16384], bits: [640, 640], text: [140, 100] }[level];
     const cx = c.X, cy = c.Y;
     X0 = Math.max(0, X0, cx - capX / 2 * unit); X1 = Math.min(s.TX, X1, cx + capX / 2 * unit);
     Y0 = Math.max(0, Y0, cy - capY / 2); Y1 = Math.min(s.TY, Y1, cy + capY / 2);
@@ -271,7 +272,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (s.ovSize !== size) {
       s.ovTex.dispose(); s.ovTex = s.ovTex.clone(); s.ov.material.map = s.ovTex; s.ov.material.needsUpdate = true; s.ovSize = size;
     }
-    s.ovTex.magFilter = level === "text" ? THREE.LinearFilter : THREE.NearestFilter; s.ovTex.needsUpdate = true;
+    // mipmaps keep far, tilted parts of the overlay from shimmering into noise
+    s.ovTex.magFilter = level === "text" ? THREE.LinearFilter : THREE.NearestFilter; s.ovTex.generateMipmaps = true; s.ovTex.minFilter = THREE.LinearMipmapLinearFilter; s.ovTex.anisotropy = renderer.capabilities.getMaxAnisotropy(); s.ovTex.needsUpdate = true;
     s.ov.visible = true; dirty = true;
   }
 
@@ -285,20 +287,20 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     const key = `${s.kind}:${level}:${X0}:${Y0}:${X1}:${Y1}`;
     const keep = overlay.prev && overlay.prev.key === key;
     if (level === "bytes") {
-      // one texel per byte, brightness = value, tinted by owner
-      const W = (X1 - X0) / 8, H = Y1 - Y0; cv.width = W; cv.height = H;
-      const g = cv.getContext("2d"), img = g.createImageData(W, H), d = img.data;
-      for (let Y = Y0; Y < Y1; Y += 1) {
-        for (let X = X0; X < X1; ) {
-          const pcol = Math.floor(X / PX), page = Math.floor(Y / PY) * s.cols + pcol, data = readPage(s, page);
-          const tint = RGB[pageCat(s, page)] || RGB.other, xEnd = Math.min(X1, (pcol + 1) * PX), row = (Y % PY) * 16;
-          for (let x = X; x < xEnd; x += 8) {
-            const bi = row + ((x % PX) >> 3), v = data && bi < data.length ? data[bi] : 0, i = ((Y - Y0) * W + (x - X0) / 8) * 4;
-            const k = data ? 0.18 + 0.82 * v / 255 : 0.05;
-            d[i] = Math.min(255, 22 + tint[0] * k); d[i + 1] = Math.min(255, 27 + tint[1] * k); d[i + 2] = Math.min(255, 34 + tint[2] * k); d[i + 3] = 255;
-            if (damagedMask(s, page * PAGE + bi) || latent(s, page * PAGE + bi)) { d[i] = 255; d[i + 1] = 60; d[i + 2] = 200; }
-          }
-          X = xEnd;
+      // one texel per byte (or per few bytes when the view is wide), tinted by owner and shaded by value
+      const nbx = (X1 - X0) / 8, H = Y1 - Y0, sx = Math.ceil(nbx / 1024), sy = Math.ceil(H / 1024);
+      const W = Math.ceil(nbx / sx), Hc = Math.ceil(H / sy); cv.width = W; cv.height = Hc;
+      const g = cv.getContext("2d"), img = g.createImageData(W, Hc), d = img.data;
+      for (let yy = 0; yy < Hc; yy++) {
+        const Y = Y0 + yy * sy, row = (Y % PY) * 16;
+        for (let xx = 0; xx < W; xx++) {
+          const X = X0 + xx * sx * 8, pcol = Math.floor(X / PX), page = Math.floor(Y / PY) * s.cols + pcol;
+          const data = readPage(s, page), tint = RGB[pageCat(s, page)] || RGB.other, bi = row + ((X % PX) >> 3);
+          const v = data && bi < data.length ? data[bi] : 0, i = (yy * W + xx) * 4;
+          // keep the owner's colour readable: the value only shades it a little
+          const k = data ? 0.62 + 0.38 * v / 255 : 0.05;
+          d[i] = Math.min(255, tint[0] * k); d[i + 1] = Math.min(255, tint[1] * k); d[i + 2] = Math.min(255, tint[2] * k); d[i + 3] = 255;
+          if (damagedMask(s, page * PAGE + bi) || latent(s, page * PAGE + bi)) { d[i] = 255; d[i + 1] = 60; d[i + 2] = 200; }
         }
       }
       g.putImageData(img, 0, 0); overlay.prev = null;

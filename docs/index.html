@@ -103,10 +103,14 @@
     .panel { max-height:calc(100% - 200px); }
     #controls, #status-panel, #missions-panel, #log-panel { width:calc(100% - 32px); left:max(16px, env(safe-area-inset-left, 0px)); right:auto; }
     #controls { top:calc(12px + env(safe-area-inset-top, 0px)); }
-    #missions-panel { top:auto; bottom:calc(140px + env(safe-area-inset-bottom, 0px)); }
+    /* phone: the two drawers sit at the top, the readout under them, only the strike line and slider at the bottom */
+    #missions-panel { top:calc(68px + env(safe-area-inset-top, 0px)); bottom:auto; }
     #status-panel, #log-panel { display:none; }
+    #controls { z-index:3; }
     .ticks span:nth-child(2), .ticks span:nth-child(4) { display:none; }
-    .hud.top { top:auto; bottom:calc(92px + env(safe-area-inset-bottom, 0px)); left:16px; right:16px; max-width:none; text-align:center; }
+    .hud.top { top:calc(126px + env(safe-area-inset-top, 0px)); left:16px; right:16px; max-width:none; text-align:left; }
+    #controls[open] ~ .hud.top, #missions-panel[open] ~ .hud.top { display:none; }
+    #beamlog { font-size:10px; }
   }
 </style>
 </head>
@@ -178,7 +182,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110503";
+window.BUILD = "2026110504";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {
