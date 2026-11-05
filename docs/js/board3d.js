@@ -104,13 +104,14 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
   };
   const hullMats = [], hullMeshes = [];
-  const hm = (o) => { const m = new THREE.MeshStandardMaterial({ transparent: true, ...o }); hullMats.push(m); return m; };
+  const hm = (o) => { const m = new THREE.MeshStandardMaterial({ transparent: true, ...o }); m.userData.base = m.opacity; m.userData.depth = m.depthWrite; hullMats.push(m); return m; };
   const hullAdd = (m) => { sat.add(m); hullMeshes.push(m); return m; };
-  const sideM = hm({ map: cellTex(2, 2), metalness: 0.35, roughness: 0.4 }), capM = hm({ color: "#c79f58", metalness: 0.9, roughness: 0.3 });
+  // the cube's walls are see-through, so the flight computer shows from outside
+  const sideM = hm({ map: cellTex(2, 2), metalness: 0.35, roughness: 0.4, opacity: 0.38, depthWrite: false }), capM = hm({ color: "#c79f58", metalness: 0.9, roughness: 0.3, opacity: 0.3, depthWrite: false });
   hullAdd(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [sideM, sideM, capM, capM, sideM, sideM]));
   const railM = hm({ color: "#b8bfcc", metalness: 1, roughness: 0.25 });
   for (const x of [-0.5, 0.5]) for (const z of [-0.5, 0.5]) { const r = hullAdd(new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.1, 0.06), railM)); r.position.set(x, 0, z); }
-  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: "#7cc4ff", transparent: true, opacity: 0 })); sat.add(edges);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: "#7cc4ff", transparent: true, opacity: 0.25 })); sat.add(edges);
   const wingM = hm({ map: cellTex(2, 4), metalness: 0.35, roughness: 0.4, side: THREE.DoubleSide });
   for (const sx of [-1, 1]) {
     const hinge = hullAdd(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.03, 0.03), railM)); hinge.position.set(sx * 0.57, 0.3, 0);
@@ -378,8 +379,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
     // from outside, the hull is in the way
-    if (xray < 0.5) { const h = ray.intersectObjects(hullMeshes, false)[0]; if (h) return { kind: "hull", point: h.point }; }
     const hit = ray.intersectObjects(pickables, false)[0];
+    if (!hit && xray < 0.5) { const h = ray.intersectObjects(hullMeshes, false)[0]; if (h) return { kind: "hull", point: h.point }; }
     if (!hit) return null;
     const m = hit.object, kind = m.userData.kind, s = m.userData.surface;
     if (!s || !hit.face || hit.face.normal.y < 0.5) return { kind, point: hit.point };
@@ -548,7 +549,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (d > 2.5 && !reduce && !flight) { tumble += dt; sat.rotation.x = Math.sin(tumble * 0.13) * 0.08; sat.rotation.z = Math.cos(tumble * 0.11) * 0.06; dirty = true; }
     // closer in, the hull turns to x-ray so you can see inside
     const xr = 1 - smooth(1.1, 1.9, d);
-    if (Math.abs(xr - xray) > 1e-3) { xray = xr; for (const mat of hullMats) { mat.opacity = 1 - xray * 0.95; mat.depthWrite = xray < 0.5; } edges.material.opacity = xray * 0.7; dirty = true; }
+    if (Math.abs(xr - xray) > 1e-3) { xray = xr; for (const mat of hullMats) { mat.opacity = mat.userData.base * (1 - xray * 0.92); mat.depthWrite = mat.userData.depth && xray < 0.5; } edges.material.opacity = 0.25 + xray * 0.45; dirty = true; }
     camera.near = Math.max(1e-6, d * 0.01); camera.updateProjectionMatrix();
     if (zoomInput && !sliding) { zoomInput.value = Math.round(Math.max(0, Math.min(1, toSlider(d))) * 1000); zoomInput.style.setProperty("--z", zoomInput.value / 10 + "%"); }
     const st = overlay.level === "text" || overlay.level === "bits" ? 4 : overlay.level === "bytes" ? 3 : d > 2.2 ? 0 : d > 0.6 ? 1 : 2;
