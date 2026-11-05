@@ -16,8 +16,9 @@ The flight computer boots into cFS in about 14 s. No special server headers are 
 ## What you can do on the page
 
 - **Three protections**, toggled from the top bar: **ECC** (in the memory controller), the hardware **Watchdog**, and **Software TMR** (in the calculator app).
-- **Three particles**: 1 bit (a single-event upset), 2 bits (two neighbouring cells, a multi-bit upset), and a shower (48 single-bit upsets scattered over a few pages).
-- **One way to inject faults: hit the hardware.** Click or tap a chip on the 3D board. RAM hits flip bits in the emulated PC's physical memory, and SD card hits damage the boot storage.
+- **Particles that fly in 3D**: a click fires along your line of sight, so the angle is however you hold the board. Choose a single bit (flips exactly the cell you aim at), a light ion, a heavy ion, or a flare burst (48 particles from random directions). How many cells flip comes out of the angle and the particle's energy (below).
+- **Background radiation**: particles from random directions at a chosen environment's rate, time-warped, with a survival dashboard (uptime, upsets, ECC outcomes, TMR repairs, crashes, resets).
+- **One way to inject faults: hit the hardware.** RAM hits flip bits in the emulated PC's physical memory, and SD card hits damage the boot storage.
 - **Semantic zoom** on the memory chips, from the whole board down to single bits (below).
 - **Missions**, each with a setup button and goals that tick themselves off:
   1. Break it (no protection)
@@ -26,6 +27,7 @@ The flight computer boots into cFS in about 14 s. No special server headers are 
   4. Where ECC gives up
   5. Software TMR: repair without a reboot
   6. Damage that waits on the SD card
+  7. Survive in orbit (background radiation)
 
 ## Hardware profile: ISISPACE iOBC
 
@@ -68,6 +70,40 @@ Only the visible region is drawn into an overlay texture, so the zoom stays smoo
 The scrubber passes every 20 s. A word software rewrites loses its old error, and turning ECC off reveals every error it was hiding.
 
 **A finding for the paper:** of all 41,664 ways to flip 3 bits of a 64-bit word, **76% end up silently wrong** under this code (9,905 detected, 31,759 miscorrected or missed). All 64 single-bit errors are corrected and all 2,016 double-bit errors detected (`ecc.js` is checked exhaustively). That is why real memory interleaves neighbouring cells across words and scrubs often.
+
+## Particle tracks: angle and energy decide how many bits flip
+
+`docs/js/radiation.js` uses a simplified sensitive-volume model, with lengths in memory-cell pitches:
+- A sensitive layer 2 cells deep lies under the chip surface. A particle enters where it hits and crosses the layer along its direction.
+- Each cell collects charge = LET × the length of track inside it, and 15% of that spreads to the 4 neighbouring cells (charge sharing).
+- A cell flips when its charge reaches the critical charge.
+
+| Particle (LET, critical charge = 1) | 0° | 30° | 45° | 60° | 75° | 85° |
+|---|---|---|---|---|---|---|
+| light ion (0.6) | 1 | 0 | 0 | 0 | 0 | 0 |
+| heavy ion (2.5) | 1 | 2 | 3 | 4 | 8 | 24 |
+| very heavy ion (6) | 5 | 5 | 5 | 11 | 8 | 24 |
+
+Cells flipped, by angle from vertical. A steep particle flips one cell. A low-angle heavy ion flips a line of cells (about depth × tan(angle)), but leaves less charge in each, so light ions flip nothing at low angles.
+
+**The direction matters as much as the angle.** One row of the chip is 16 bytes, which is two ECC words. A line of upsets **along a row** stays inside one word: ECC detects it but cannot fix it, and in used memory that means a machine check and a reset. The same particle **across rows** puts one bit in each of several words, and ECC corrects them all. This is why real memory interleaves its cells, and mission 4 lets you see it by turning the board.
+
+## Background radiation
+
+Particles arrive at random points on the board from random directions. Through a flat surface the flux goes as cos(angle), and the spectrum is mostly light ions (90% light, 9.5% heavy, 0.5% very heavy).
+
+| Environment | Particles per mission day on the board |
+|---|---|
+| Quiet low Earth orbit | 0.25 |
+| South Atlantic Anomaly pass | 10 |
+| Solar particle event | 150 |
+| Stress test | 15,000 (far beyond reality) |
+
+These are **illustrative orders of magnitude**, not data for one device. A modern SDRAM in LEO sees roughly one upset in 64 MB every few weeks, and one example (Gaia's SDRAM) ran 1.5–4.3× its usual rate during solar particle events.
+
+Time warp runs from 1 minute to 1 week of mission time per second, capped at 40 particles per real second. Only the radiation is warped: the software runs in real time, so a reboot still takes about 30 s, and uptime is measured in real time.
+
+Only 2% of background particles that reach the SD card leave damage. NAND flash cells hold far more charge than DRAM cells and the card's controller has its own ECC; without this factor a stress run destroys the card within seconds. Clicked SD hits always land.
 
 ## Software TMR inside one computer
 
@@ -116,7 +152,8 @@ The emulated hardware (`docs/js/hardware.js`) knows nothing about Linux or cFS. 
 | `docs/js/main.js` | wires the page together |
 | `docs/js/hardware.js` | the flight computer: RAM + ECC + scrubber, SD card, FRAM, watchdog, serial ports, memory map |
 | `docs/js/ecc.js` | SECDED (72,64) decoder |
-| `docs/js/board3d.js` | 3D board, semantic zoom, picking, strikes |
+| `docs/js/board3d.js` | 3D board, semantic zoom, picking, strikes along the line of sight |
+| `docs/js/radiation.js` | particle track model, random directions and spectrum, background radiation and its statistics |
 | `docs/js/missions.js` | the six missions |
 | `docs/js/os/linux-cfs.js` | OS adapter for Linux + cFS |
 | `docs/bzImage`, `initrd.gz` | Linux 6.8 (i386) and the root filesystem: busybox, 32-bit glibc, cFS with 13 apps + 2 libs |
@@ -153,9 +190,12 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 | `test/test-watchdog.mjs` | Node + v86 | 9/9 |
 | `test/test-tmr.mjs` | Node + v86 | 12/12 |
 | `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
-| `test/browser-lab.mjs` | Chrome | 23/23 (below) |
+| `test/browser-lab.mjs` | Chrome | 29/29 (below) |
+| `test/test-ecc.mjs` | Node | 66/66: every 1-, 2- and 3-bit error |
 
 `browser-lab.mjs` checks the following:
+- Particle tracks: a light ion straight down flips 1 bit and one at 60° flips nothing; a heavy ion at 75° flips a line in one word along a row, and one bit in each of 8 words across rows (all corrected with ECC on).
+- Background radiation: strikes land and the mission clock and dashboard run.
 - Zooming to a TMR copy reaches readable bits, and a real click flips exactly the bit under the pointer.
 - The vote repairs a flipped copy; with TMR off the answer goes wrong.
 - Every ECC outcome: corrected, detected in free memory, silent 3-bit, scrub, ECC off revealing hidden errors, and a 2-bit machine check resetting the computer.
