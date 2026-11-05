@@ -93,8 +93,10 @@ export class Background {
     });
     bus.on("power-on", () => { this.lastRepairs = null; });
   }
-  // missionS: mission time (time-warped while background radiation is on, real time otherwise)
-  // realS/upS/downS: real seconds since launch, with the flight software up, and down
+  // missionS: mission time since launch. upS/downS: mission seconds with the flight software up and down.
+  // Time warp only runs while the flight software is up. An outage plays out in real time on both the
+  // clock and the radiation, so a 30 s reboot costs 30 s of mission time, as it would in orbit, and
+  // uptime = upS / missionS means what it means for a real satellite.
   resetStats() {
     const up = this.fc.operational;
     this.s = { started: up, missionS: 0, realS: 0, upS: 0, downS: 0, outages: 0, strikes: 0, ram: 0, sd: 0, bits: 0, out: {}, crashes: 0, resets: {}, wrong: 0, tmrRepairs: 0 };
@@ -107,13 +109,16 @@ export class Background {
     if (opts.warp) this.warp = opts.warp;
     bus.emit("bg-settings", { bg: this });
   }
+  // the warp in force right now: none while the flight software is down
+  get warpNow() { return this.on && this.fc.operational ? this.warp : 1; }
   // strikes per real second, capped so the page keeps up
-  get rate() { return Math.min(ENVIRONMENTS[this.env].perDay / 86400 * this.warp, 40); }
+  get rate() { return Math.min(ENVIRONMENTS[this.env].perDay / 86400 * this.warpNow, 40); }
   step(dt) {
     const s = this.s;
     if (s.started) {
-      s.missionS += dt * (this.on ? this.warp : 1); s.realS += dt;
-      if (this.fc.operational) s.upS += dt; else s.downS += dt;
+      const m = dt * this.warpNow;
+      s.missionS += m; s.realS += dt;
+      if (this.fc.operational) s.upS += m; else s.downS += m;
     }
     if (!this.on) return;
     let n = poisson(this.rate * dt);

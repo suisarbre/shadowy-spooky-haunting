@@ -162,7 +162,7 @@
   <summary>Status</summary>
   <div class="body">
     <div class="facts" id="facts"></div>
-    <div class="lbl">Survival under background radiation (time-warped)</div>
+    <div class="lbl">Mission statistics</div>
     <div class="facts survival" id="survival"></div>
     <div class="legend" aria-label="Memory colours">
       <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core</span><span><i style="background:#2ea043"></i>cFS apps</span>
@@ -184,7 +184,7 @@
     <div><span class="lbl">Bit upsets</span><b id="m-bits">0</b></div>
     <div><span class="lbl">ECC fixed</span><b id="m-ecc">0</b></div>
   </div>
-  <div class="mnote" id="m-note">real-time uptime · clock runs at 1×</div>
+  <div class="mnote" id="m-note">clock runs at 1×</div>
 </section>
 <details class="panel" id="missions-panel" open>
   <summary>Missions</summary>
@@ -216,7 +216,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110510";
+window.BUILD = "2026110511";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {

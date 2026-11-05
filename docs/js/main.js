@@ -52,22 +52,22 @@ function renderStatus() {
 // how the computer is holding up under background radiation
 // the mission board, top right
 function renderBoard() {
-  const s = bg.s, up = s.realS ? 100 * s.upS / s.realS : null, nRes = Object.values(s.resets).reduce((a, n) => a + n, 0);
+  const s = bg.s, up = s.missionS ? 100 * s.upS / s.missionS : null, nRes = Object.values(s.resets).reduce((a, n) => a + n, 0);
   $("m-t").textContent = s.started ? `T+ ${formatMission(s.missionS)}` : "T− launch";
-  const u = $("m-up"); u.textContent = up === null ? "–" : (up >= 99.95 && up < 100 ? up.toFixed(2) : up.toFixed(1)) + "%"; u.className = up === null ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad";
+  const u = $("m-up"); u.textContent = up === null ? "–" : (up >= 99.9 && up < 100 ? up.toFixed(up >= 99.995 ? 4 : 3) : up.toFixed(1)) + "%"; u.className = up === null ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad";
   $("m-down").textContent = formatShort(s.downS); $("m-down").className = s.downS > 0 ? "warn" : "";
   $("m-out").textContent = s.outages; $("m-out").className = s.outages ? "bad" : "";
   $("m-res").textContent = nRes;
   $("m-bits").textContent = s.bits.toLocaleString("en-US");
   $("m-ecc").textContent = ((s.out.corrected || 0)).toLocaleString("en-US");
-  $("m-note").textContent = bg.on ? `clock ×${bg.warp.toLocaleString("en-US")} (${WARPS.find((w) => w.s === bg.warp)?.label || ""}) · uptime and downtime in real time` : "clock runs at 1× · background radiation off";
+  $("m-note").textContent = !bg.on ? "clock runs at 1× · background radiation off" : fc.operational ? `clock ×${bg.warp.toLocaleString("en-US")} (${WARPS.find((w) => w.s === bg.warp)?.label || ""}) · warp pauses during outages` : "flight software down: clock at 1× until it is back";
 }
 function renderSurvival() {
   renderBoard();
-  const s = bg.s, up = s.realS ? (100 * s.upS / s.realS) : 0, o = s.out, resets = Object.entries(s.resets);
+  const s = bg.s, up = s.missionS ? (100 * s.upS / s.missionS) : 0, o = s.out, resets = Object.entries(s.resets);
   $("survival").innerHTML = `
     <div><span class="k">Mission time</span><b>${formatMission(s.missionS)}</b></div>
-    <div><span class="k">Flight software up</span><b class="${!s.realS ? "" : up >= 95 ? "ok" : up >= 70 ? "warn" : "bad"}">${s.realS ? up.toFixed(1) + "%" : "–"}</b></div>
+    <div><span class="k">Flight software up</span><b class="${!s.missionS ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad"}">${s.missionS ? up.toFixed(3) + "%" : "–"}</b></div>
     <div><span class="k">Particles</span>${s.strikes} (${s.ram} on RAM, ${s.sd} on the SD card)</div>
     <div><span class="k">RAM bits upset</span>${s.bits}</div>
     <div><span class="k">ECC</span>${o.corrected || 0} corrected · ${(o["machine-check"] || 0) + (o["detected-unused"] || 0)} detected · ${o.silent || 0} silently wrong</div>

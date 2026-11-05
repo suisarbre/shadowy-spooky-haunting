@@ -102,7 +102,7 @@ Cells flipped, by angle from vertical. A steep particle flips one cell. A low-an
 
 The top right corner always shows the mission so far, with a Reset button that starts it again:
 - **T+**: mission elapsed time. It is time-warped while background radiation is on, and runs at 1× otherwise. Launch (T+0) is the first time the flight software comes up.
-- **Uptime and downtime**: share of real time the flight software was up, and how long it was down. These are in real time, because the software runs in real time: a 30 s reboot is 30 s, however fast the radiation clock runs.
+- **Uptime and downtime**: share of mission time the flight software was up, and how long it was down. Time warp runs only while the flight software is up; during an outage the clock and the radiation drop back to 1×. The software runs in real time, so a reboot costs its real ~30 s of mission time, as it would in orbit. Measuring uptime in real time instead would inflate every outage by the warp factor (a 30 s reboot at 1 week per second would count as 30 weeks).
 - **Outages**: times the flight software went from up to down (crash, hang, reset, boot loop).
 - **Resets, bit upsets, ECC fixed**: counted from every source, clicks and background alike.
 
@@ -119,7 +119,7 @@ Particles arrive at random points on the board from random directions. Through a
 
 These are **illustrative orders of magnitude**, not data for one device. A modern SDRAM in LEO sees roughly one upset in 64 MB every few weeks, and one example (Gaia's SDRAM) ran 1.5–4.3× its usual rate during solar particle events.
 
-Time warp runs from 1 minute to 1 week of mission time per second, capped at 40 particles per real second. Only the radiation is warped: the software runs in real time, so a reboot still takes about 30 s, and uptime is measured in real time.
+Time warp runs from 1 minute to 1 week of mission time per second, capped at 40 particles per real second. Only the radiation is warped, and only while the flight software is up: outages play out at 1×, so uptime comes out as it would for a real satellite.
 
 Only 2% of background particles that reach the SD card leave damage. NAND flash cells hold far more charge than DRAM cells and the card's controller has its own ECC; without this factor a stress run destroys the card within seconds. Clicked SD hits always land.
 

@@ -94,8 +94,11 @@ await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", 
 await sleep(6000);
 r = await ev(() => ({ ...sim.bg.s, survival: document.getElementById("survival").textContent.replace(/\s+/g, " ") }));
 await ev(() => { sim.applySetup({ bg: false }); sim.fc.restoreSd(); });
-result("background radiation: random strikes over the board, mission clock runs", r.strikes > 100 && r.ram > 10 && r.missionS > 30 * 86400 && /mission time/i.test(r.survival), `${r.strikes} strikes, ${r.ram} on RAM, ${r.bits} bits · ${r.survival.slice(0, 160)}`);
+result("background radiation: random strikes over the board, mission clock runs", r.strikes > 100 && r.ram > 10 && r.missionS > 3 * 86400 && /mission time/i.test(r.survival), `${r.strikes} strikes, ${r.ram} on RAM, ${r.bits} bits · ${r.survival.slice(0, 160)}`);
 if (!(await ev(() => sim.fc.operational))) await up();
+// time warp pauses while the flight software is down, so outages cost their real duration
+r = await ev(() => { sim.applySetup({ bg: true, env: "quiet", warp: 604800 }); const upWarp = sim.bg.warpNow; const was = sim.fc.operational; sim.fc.operational = false; const downWarp = sim.bg.warpNow; sim.fc.operational = was; sim.applySetup({ bg: false }); return { upWarp, downWarp }; });
+result("time warp runs only while the flight software is up", r.upWarp === 604800 && r.downWarp === 1, JSON.stringify(r));
 
 // ---- watchdog (mission 2 ticks itself off) ----
 await ev(() => { sim.missions.select("watchdog"); sim.applySetup({ watchdog: true }); });
