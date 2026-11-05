@@ -613,8 +613,16 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       controls.target.lerp(under.point, 0.18);
       return;
     }
+    // the nearest chip to where the middle of the screen meets the board, by distance to its edges
+    // (by distance to its centre the big memory chip would always win)
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(group.getWorldQuaternion(tmpQ));
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(up, group.localToWorld(new THREE.Vector3(0, 0.08, 0)));
+    const look = group.worldToLocal(ray.ray.intersectPlane(plane, new THREE.Vector3()) || controls.target.clone());
     let s = null, bestD = Infinity;
-    for (const x of [ram, sd, cpuS]) { const dd = ray.ray.distanceSqToPoint(x.mesh.localToWorld(new THREE.Vector3(0, x.h / 2, 0))); if (dd < bestD) { bestD = dd; s = x; } }
+    for (const x of [ram, sd, cpuS]) {
+      const dx = Math.max(0, Math.abs(look.x - x.mesh.position.x) - x.w / 2), dz = Math.max(0, Math.abs(look.z - x.mesh.position.z) - x.d / 2), dd = dx * dx + dz * dz;
+      if (dd < bestD) { bestD = dd; s = x; }
+    }
     const l = s.mesh.worldToLocal(controls.target.clone()), m = 0.47;
     const inX = Math.abs(l.x) <= s.w / 2 && Math.abs(l.z) <= s.d / 2;
     // far off the chip: go for its middle; just off an edge: step back over the edge
@@ -705,6 +713,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     // the share of the board's area that is RAM (background particles land uniformly on the board)
     ramShare: (ram.w * ram.d) / (9 * 6.6),
     onMap: () => drawBase(ram), onSd: refreshSd, redraw,
+    _screen: (which) => { const o = { cpu, ram: ram.mesh, sd: sd.mesh }[which]; const v = o.getWorldPosition(new THREE.Vector3()).project(camera), r = el.getBoundingClientRect(); return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height }; },
     _cam: () => ({ t: controls.target.toArray().map((v) => +v.toFixed(5)), c: camera.position.toArray().map((v) => +v.toFixed(5)), auto: controls.autoRotate, sat: [sat.rotation.x, sat.rotation.z].map((v) => +v.toFixed(4)) }),
     _debug: () => { const r = overlay.region; return r && { kind: r.s.kind, X0: r.X0, Y0: r.Y0, X1: r.X1, Y1: r.Y1, level: overlay.level, canvas: [overlay.canvas.width, overlay.canvas.height], start: r.s.at(r.X0, r.Y0), dist: camera.position.distanceTo(controls.target), png: overlay.canvas.toDataURL() }; },
   };
