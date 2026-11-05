@@ -113,7 +113,8 @@ result("CPU: a light ion straight down flips one bit", r && r.bits === 1, JSON.s
 // background on the die, calibrated per register bit (2e-7 upsets per bit per day)
 await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 100 }); });
 await sleep(15000);
-r = await ev(() => { sim.applySetup({ bg: false }); const s = sim.bg.s; return { cpuBits: s.cpuBits, cpu: s.cpu, days: s.missionS / 86400, perDay: sim.bg.cpuUpsetsPerDay, board: document.getElementById("m-cpu").textContent }; });
+await ev(() => sim.applySetup({ bg: false })); await sleep(800);   // the mission board refreshes every 300 ms
+r = await ev(() => { const s = sim.bg.s; return { cpuBits: s.cpuBits, cpu: s.cpu, days: s.missionS / 86400, perDay: sim.bg.cpuUpsetsPerDay, board: document.getElementById("m-cpu").textContent }; });
 const ratio = r.cpuBits / (r.perDay * r.days);
 result("CPU background upsets match the per-bit rate", r.cpu > 20 && ratio > 0.5 && ratio < 1.7 && r.board === String(r.cpuBits), `${r.cpuBits} bits from ${r.cpu} particles, expected ${(r.perDay * r.days).toFixed(1)} (ratio ${ratio.toFixed(2)})`);
 // that much radiation also damages the SD card: restore it, then reboot clean
@@ -147,6 +148,11 @@ result("power cycle: flight software cannot start", await until(() => sim.fc.sta
 result("boot loop: FRAM counts failed boots", await until(() => sim.fc.fram.failedStreak >= 2, null, 150000), JSON.stringify(await ev(() => sim.fc.fram)));
 await ev(() => sim.fc.restoreSd());
 result("restore SD card: the next reset boots clean", await up(), JSON.stringify(await ev(() => sim.fc.fram)));
+// the same damage, left alone: after 3 failed boots the boot loader falls back to the golden image
+const g0 = await ev(() => sim.fc.fram.goldenBoots);
+await ev((i) => { sim.applySetup({ golden: true, watchdog: true }); sim.board.strikeAt("sd", i, 0); sim.fc.powerCycle("ground command"); }, exe);
+result("golden image: 3 failed boots in a row, the boot loader boots the golden copy", await until((g) => sim.fc.fram.goldenBoots > g, g0, 200000), JSON.stringify(await ev(() => sim.fc.fram)));
+result("...it repairs the card and the flight software comes back without the ground", (await up()) && (await ev(() => sim.fc.sdDamagedBits() === 0)), JSON.stringify(await ev(() => ({ state: sim.fc.state, sd: sim.fc.sdDamagedBits() }))));
 
 await ev(() => sim.board.home()); await sleep(1500);
 await p.screenshot({ path: "test-board.png" });

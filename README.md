@@ -172,7 +172,10 @@ Every power-on boots from the SD card as it is at that moment. The filesystem im
 | an unused file | normal |
 | `cfs/cpu1/cf/sample_app.so` | cFS logs `Could not load file:/cf/sample_app.so`; everything else runs |
 | `cfs/cpu1/core-cpu1` | the flight software cannot start; the watchdog resets again and again (boot loop), and FRAM counts the failed boots |
-| ground restores the card | the next reset boots clean |
+| 3 failed boots in a row, golden image on | the boot loader boots the golden copy and writes it over the damaged card: back up without the ground |
+| golden image off, or the ground restores the card | the boot loop goes on until the ground re-uploads the image; then the next reset boots clean |
+
+**Golden image.** The iOBC has two SD card slots. The second holds a write-protected copy of the launch image. The boot loader reads the failed-boot count from FRAM, and after 3 failures in a row it boots the golden copy and copies it over the primary card. The golden card itself is not exposed to hits in the model: a real one would be write-protected and checked with a CRC before use. Toggle it under Protection.
 
 ## OS adapters
 
@@ -223,7 +226,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 | `test/test-watchdog.mjs` | Node + v86 | 9/9 |
 | `test/test-tmr.mjs` | Node + v86 | 12/12 |
 | `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
-| `test/browser-lab.mjs` | Chrome | 36/36 (below) |
+| `test/browser-lab.mjs` | Chrome | 38/38 (below) |
 | `test/test-ecc.mjs` | Node | 66/66: every 1-, 2- and 3-bit error |
 
 `browser-lab.mjs` checks the following:
@@ -235,7 +238,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 - CPU: a single-bit hit flips exactly that register bit (bit 31 too); a heavy ion along a row flips a run of bits in one register; a light ion straight down flips one; background upsets on the die match the per-bit rate; flipping CR0.PG locks the CPU up and the watchdog recovers it.
 - The watchdog recovers a killed flight software.
 - The particle shower lands its bits.
-- An SD hit leads to a boot loop, and restoring the card recovers it.
+- An SD hit leads to a boot loop, and restoring the card recovers it. Left alone, the boot loader falls back to the golden image after 3 failed boots and the flight software comes back.
 
 Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome node test/browser-lab.mjs`.
 

@@ -9,23 +9,24 @@ const STATE_TEXT = {
   booting: () => `booting (boot #${fc.fram.boots})…`, bootloop: () => `BOOT LOOP (${fc.fram.failedStreak} failed boots in a row)`,
   starting: () => "starting flight software…", operational: () => "OPERATIONAL", lost: () => "telemetry lost, checking…",
   crashed: () => "flight software crashed", hung: () => "silent but alive (hung)", exited: (d) => `flight software exited (code ${d})`,
-  badimage: () => "flight software cannot start (damaged file)", panic: () => "kernel panic", lockup: () => "CPU locked up",
+  badimage: () => "flight software cannot start (damaged file)", panic: () => "kernel panic", lockup: () => "CPU locked up", golden: () => `booting the golden image (after ${fc.fram.failedStreak} failed boots)…`,
 };
-const STATE_CLASS = { operational: "ok", booting: "", starting: "", lost: "warn", hung: "bad", crashed: "bad", exited: "bad", badimage: "bad", panic: "bad", lockup: "bad", bootloop: "bad" };
-const desired = { ecc: false, watchdog: true, tmr: true, particle: "heavy" };
+const STATE_CLASS = { operational: "ok", booting: "", starting: "", lost: "warn", hung: "bad", crashed: "bad", exited: "bad", badimage: "bad", panic: "bad", lockup: "bad", golden: "warn", bootloop: "bad" };
+const desired = { ecc: false, watchdog: true, tmr: true, golden: true, particle: "heavy" };
 let fc, board, bg;
 
 function setToggle(id, on, label) { const b = $(id); b.setAttribute("aria-pressed", String(on)); b.querySelector("b").textContent = on ? "ON" : "OFF"; }
 function applySetup(s) {
   if (s.ecc !== undefined) { desired.ecc = s.ecc; fc.setEcc(s.ecc); }
   if (s.watchdog !== undefined) { desired.watchdog = s.watchdog; fc.setWatchdog(s.watchdog); }
+  if (s.golden !== undefined) { desired.golden = s.golden; fc.setGolden(s.golden); }
   if (s.tmr !== undefined) { desired.tmr = s.tmr; if (fc.operational) fc.send(commands.calcTmr(s.tmr)); }
   if (s.particle) desired.particle = s.particle;
   if (s.bg !== undefined || s.env || s.warp) bg.set({ on: s.bg, env: s.env, warp: s.warp });
   renderControls();
 }
 function renderControls() {
-  setToggle("t-ecc", desired.ecc); setToggle("t-wd", desired.watchdog); setToggle("t-tmr", desired.tmr);
+  setToggle("t-ecc", desired.ecc); setToggle("t-wd", desired.watchdog); setToggle("t-tmr", desired.tmr); setToggle("t-gold", desired.golden);
   for (const b of document.querySelectorAll("#particle button")) b.setAttribute("aria-pressed", String(b.dataset.p === desired.particle));
   if (bg) { setToggle("bg-on", bg.on); $("bg-env").value = bg.env; $("bg-warp").value = String(bg.warp); }
 }
@@ -38,7 +39,7 @@ function renderStatus() {
   const rep = fc.app.lastRepair && now - fc.app.lastRepair.t < 4000 ? fc.app.lastRepair : null;
   $("facts").innerHTML = `
     <div><span class="k">Watchdog</span>${wdText}</div>
-    <div><span class="k">FRAM boot record</span>boot #${fc.fram.boots} · failed in a row ${fc.fram.failedStreak} · last reset: ${fc.fram.lastReset}</div>
+    <div><span class="k">FRAM boot record</span>boot #${fc.fram.boots} · failed in a row ${fc.fram.failedStreak} · last reset: ${fc.fram.lastReset} · golden-image boots ${fc.fram.goldenBoots}</div>
     <div><span class="k">ECC</span>${e.on ? `on · corrected ${e.corrected} · detected ${e.detected} · silently wrong ${e.silent} · hiding now <b class="${e.latent.size ? "pink" : ""}">${e.latent.size}</b> · next scrub in ${scrubIn} s` : "off"}</div>
     <div><span class="k">SD card</span>${fc.sdDamagedBits() ? `<b class="bad">${fc.sdDamagedBits()} bit(s) damaged</b>, takes effect at the next boot` : "matches the launch image"}</div>
     <div class="calc"><span class="k">Calculator (software TMR ${c ? (c.on ? "on" : "off") : "–"})</span>${c ? `step ${c.step} · sum ${c.sum} <b class="${calcOk(c) ? "ok" : "bad"}">${calcOk(c) ? "✓ correct" : `✗ should be ${calcExpected(c.step)}`}</b><br>
@@ -140,6 +141,7 @@ async function start() {
 $("t-ecc").onclick = () => applySetup({ ecc: !desired.ecc });
 $("t-wd").onclick = () => applySetup({ watchdog: !desired.watchdog });
 $("t-tmr").onclick = () => applySetup({ tmr: !desired.tmr });
+$("t-gold").onclick = () => applySetup({ golden: !desired.golden });
 $("particle").onclick = (e) => { const b = e.target.closest("button"); if (b) applySetup({ particle: b.dataset.p }); };
 $("bg-on").onclick = () => applySetup({ bg: !bg.on });
 $("bg-env").onchange = () => applySetup({ env: $("bg-env").value });

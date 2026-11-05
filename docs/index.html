@@ -121,6 +121,7 @@
         <button id="t-ecc" class="toggle" aria-pressed="false">ECC <b>OFF</b></button>
         <button id="t-wd" class="toggle" aria-pressed="true">Watchdog <b>ON</b></button>
         <button id="t-tmr" class="toggle" aria-pressed="true" disabled>TMR <b>ON</b></button>
+        <button id="t-gold" class="toggle" aria-pressed="true" title="Boot loader falls back to a protected copy of the image after 3 failed boots in a row">Golden image <b>ON</b></button>
       </div>
     </div>
     <div><div class="lbl">Particle</div>
@@ -191,7 +192,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110518";
+window.BUILD = "2026110519";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {

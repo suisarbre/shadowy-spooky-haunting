@@ -9,7 +9,8 @@ import { WORD, decode, bitsSet } from "./ecc.js";
 
 export const BOOT_WINDOW_MS = 30000;   // after power-on the flight software must check in with the watchdog within this
 export const SILENCE_MS = 6000;        // telemetry gap that makes the ground ask "is it still alive?"
-export const SCRUB_MS = 20000;         // the ECC scrubber reads every word of RAM once per this period
+export const SCRUB_MS = 20000;
+export const GOLDEN_AFTER = 3;         // failed boots in a row (counted in FRAM) before the boot loader falls back to the golden image         // the ECC scrubber reads every word of RAM once per this period
 export const RAM_MB = 64;              // iOBC SDRAM
 
 // The CPU's architectural state that a particle can upset, as v86 keeps it (32-bit x86).
@@ -37,7 +38,10 @@ export class FlightComputer {
     // SD card: the boot storage as it is now, damage included
     this.sd = { kernel: images.kernel.slice(), fs: images.fs.slice(), diffs: new Map() };
     // FRAM: non-volatile and immune to bit flips, so it keeps the boot record across resets
-    this.fram = { boots: 0, failedStreak: 0, wdResets: 0, mcResets: 0, lastReset: "first power-on" };
+    this.fram = { boots: 0, failedStreak: 0, wdResets: 0, mcResets: 0, goldenBoots: 0, lastReset: "first power-on" };
+    // the golden image: a write-protected copy of the launch image on the second SD card (the iOBC has
+    // two card slots). The boot loader falls back to it after GOLDEN_AFTER failed boots in a row.
+    this.golden = { on: true };
     // memory controller ECC; flipped cells it is hiding, per 8-byte word
     this.ecc = { on: false, latent: new Map(), corrected: 0, detected: 0, silent: 0, scrubbed: 0, overwritten: 0, lastScrub: Date.now() };
     this.watchdogConnected = true;
@@ -56,7 +60,15 @@ export class FlightComputer {
     // like real watchdog chips, this one runs from the moment power comes on
     this.wd = { enabled: this.watchdogConnected, timeoutMs: BOOT_WINDOW_MS, lastKick: Date.now(), byFsw: false };
     this.fram.boots++;
-    this.setState(this.fram.failedStreak >= 2 ? "bootloop" : "booting");
+    this.bootSource = "primary";
+    if (this.golden.on && this.fram.failedStreak >= GOLDEN_AFTER) {
+      // the boot loader reads the failure count from FRAM, boots the golden copy and writes it over the primary card
+      this.bootSource = "golden"; this.fram.goldenBoots++;
+      this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear();
+      this.log(`BOOT LOADER: ${this.fram.failedStreak} failed boots in a row (FRAM) · booting the golden image from SD card 2 and copying it over SD card 1`);
+      this.emit("sd-restore"); this.emit("golden-boot");
+    }
+    this.setState(this.bootSource === "golden" ? "golden" : this.fram.failedStreak >= 2 ? "bootloop" : "booting");
     const { bios, vga } = this.images;
     this.emu = new window.V86({
       wasm_path: `v86.wasm?v=${window.BUILD}`,
@@ -95,7 +107,7 @@ export class FlightComputer {
     this.setState("lockup");
     if (was) this.emit("fsw-down", { why: "lockup" });
   }
-  // state: booting | bootloop | starting | operational | lost | crashed | hung | exited | badimage | panic | lockup
+  // state: booting | bootloop | starting | operational | lost | crashed | hung | exited | badimage | panic | lockup | golden
   setState(state, detail = "") { this.state = state; this.stateDetail = detail; this.emit("state", { state, detail }); }
 
   sh(cmd) { if (this.emu) this.emu.serial0_send(cmd + "\n"); }
@@ -344,6 +356,7 @@ export class FlightComputer {
     this.emit("sd-hit", r);
     return r;
   }
+  setGolden(on) { this.golden.on = on; this.log(`Golden image fallback ${on ? "on" : "off"}${on ? ` (after ${GOLDEN_AFTER} failed boots in a row)` : ": a damaged card boot-loops until the ground restores it"}`); }
   restoreSd() {
     this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear();
     this.log("SD card restored from the launch image (ground re-upload)"); this.emit("sd-restore");
