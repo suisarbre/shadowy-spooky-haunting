@@ -82,10 +82,10 @@ const MISSIONS = [
     id: "orbit", title: "7. Survive in orbit",
     setup: { ecc: true, watchdog: true, tmr: true, particle: "heavy", bg: true, env: "flare", warp: 86400 },
     intro: "Background radiation on: particles arrive from random directions at the rate of a solar particle event, sped up so a day passes every second. See how the computer holds up, then try other protection settings.",
-    hint: "Reset the stats before each run so the numbers compare. Try everything off, ECC only, and everything on. The stress test is far beyond real rates: it shows what each layer does when it is overwhelmed.",
+    hint: "Reset the mission clock (top right) before each run so the numbers compare. Try everything off, ECC only, and everything on. The stress test is far beyond real rates: it shows what each layer does when it is overwhelmed.",
     goals: [
-      { text: "Run 7 mission days under background radiation", on: { "bg-progress": (e) => e.stats.missionS >= 7 * 86400 } },
-      { text: "…with the flight software up at least 95% of the time", after: 0, on: { "bg-progress": (e) => e.stats.missionS >= 7 * 86400 && e.stats.upS / e.stats.realS >= 0.95 } },
+      { text: "Run 7 mission days under background radiation", on: { "bg-progress": (e) => e.bg.on && e.stats.missionS >= 7 * 86400 } },
+      { text: "…with the flight software up at least 95% of the time", after: 0, on: { "bg-progress": (e) => e.bg.on && e.stats.missionS >= 7 * 86400 && e.stats.upS / e.stats.realS >= 0.95 } },
       { text: "Bonus: run the stress test until something gets through", optional: true, on: { reset: (e) => window.sim && window.sim.bg.on && window.sim.bg.env === "stress", "fsw-down": () => window.sim && window.sim.bg.on && window.sim.bg.env === "stress" } },
     ],
     why: "In orbit, faults are random in place, time and direction. Most particles land in free memory or flip nothing; what matters is the rare heavy ion at a low angle, or a hit on something the software is using right now. The protections stack: ECC removes nearly all single-bit errors, TMR keeps one critical calculation right without a reboot, and the watchdog turns whatever still gets through into a reboot instead of a dead satellite. Uptime shows what each layer is worth. The rates here are illustrative orders of magnitude, sped up; the software itself runs in real time, so a reboot still takes half a minute.",

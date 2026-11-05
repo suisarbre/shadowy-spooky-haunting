@@ -69,22 +69,38 @@ export const WARPS = [
 export class Background {
   constructor({ fc, board }) {
     this.fc = fc; this.board = board;
-    this.on = false; this.env = "flare"; this.warp = 86400;
+    this.on = false; this.env = "flare"; this.warp = 86400; this.wasUp = false;
     this.resetStats();
     let last = performance.now();
-    setInterval(() => { const now = performance.now(), dt = (now - last) / 1000; last = now; if (this.on) this.step(Math.min(dt, 1)); }, 100);
-    bus.on("ram-hit", (e) => { if (!this.on) return; this.s.bits += e.bits || 0; for (const [k, n] of Object.entries(e.outcomes || {})) this.s.out[k] = (this.s.out[k] || 0) + n; });
-    bus.on("fsw-down", () => { if (this.on) this.s.crashes++; });
-    bus.on("reset", (e) => { if (this.on) this.s.resets[e.reason] = (this.s.resets[e.reason] || 0) + 1; });
-    bus.on("calc-wrong", () => { if (this.on) this.s.wrong++; });
+    setInterval(() => { const now = performance.now(), dt = (now - last) / 1000; last = now; this.step(Math.min(dt, 1)); }, 100);
+    // mission statistics count everything (clicks and background alike) from the first time
+    // the flight software is up: that moment is launch, T+0
+    const live = () => this.s.started;
+    bus.on("ram-hit", (e) => { if (!live()) return; this.s.bits += e.bits || 0; for (const [k, n] of Object.entries(e.outcomes || {})) this.s.out[k] = (this.s.out[k] || 0) + n; });
+    bus.on("fsw-down", () => { if (live()) this.s.crashes++; });
+    bus.on("reset", (e) => { if (live()) this.s.resets[e.reason] = (this.s.resets[e.reason] || 0) + 1; });
+    bus.on("calc-wrong", () => { if (live()) this.s.wrong++; });
+    bus.on("state", (e) => {
+      const up = e.state === "operational";
+      if (up && !this.s.started) this.s.started = true;
+      if (this.s.started && this.wasUp && !up) this.s.outages++;
+      this.wasUp = up;
+    });
     bus.on("telemetry", () => {
       const c = this.fc.app.calc; if (!c) return;
-      if (this.on && this.lastRepairs !== null && c.repairs > this.lastRepairs) this.s.tmrRepairs += c.repairs - this.lastRepairs;
+      if (live() && this.lastRepairs !== null && c.repairs > this.lastRepairs) this.s.tmrRepairs += c.repairs - this.lastRepairs;
       this.lastRepairs = c.repairs;
     });
     bus.on("power-on", () => { this.lastRepairs = null; });
   }
-  resetStats() { this.s = { missionS: 0, realS: 0, upS: 0, strikes: 0, ram: 0, sd: 0, bits: 0, out: {}, crashes: 0, resets: {}, wrong: 0, tmrRepairs: 0 }; this.lastRepairs = null; }
+  // missionS: mission time (time-warped while background radiation is on, real time otherwise)
+  // realS/upS/downS: real seconds since launch, with the flight software up, and down
+  resetStats() {
+    const up = this.fc.operational;
+    this.s = { started: up, missionS: 0, realS: 0, upS: 0, downS: 0, outages: 0, strikes: 0, ram: 0, sd: 0, bits: 0, out: {}, crashes: 0, resets: {}, wrong: 0, tmrRepairs: 0 };
+    this.lastRepairs = null; this.wasUp = up;
+    bus.emit("stats-reset", { bg: this });
+  }
   set(opts) {
     if (opts.on !== undefined) this.on = opts.on;
     if (opts.env) this.env = opts.env;
@@ -95,7 +111,11 @@ export class Background {
   get rate() { return Math.min(ENVIRONMENTS[this.env].perDay / 86400 * this.warp, 40); }
   step(dt) {
     const s = this.s;
-    s.missionS += dt * this.warp; s.realS += dt; if (this.fc.operational) s.upS += dt;
+    if (s.started) {
+      s.missionS += dt * (this.on ? this.warp : 1); s.realS += dt;
+      if (this.fc.operational) s.upS += dt; else s.downS += dt;
+    }
+    if (!this.on) return;
     let n = poisson(this.rate * dt);
     while (n-- > 0) {
       const r = this.board.randomStrike(randomParticle(), randomDirection());
@@ -112,6 +132,11 @@ function poisson(lambda) {
 }
 function gauss() { return Math.sqrt(-2 * Math.log(Math.random() || 1e-9)) * Math.cos(2 * Math.PI * Math.random()); }
 
+// a real-time duration, short: "42 s", "3 min 10 s", "1 h 4 min"
+export function formatShort(sec) {
+  sec = Math.round(sec);
+  return sec < 60 ? `${sec} s` : sec < 3600 ? `${Math.floor(sec / 60)} min ${sec % 60} s` : `${Math.floor(sec / 3600)} h ${Math.floor(sec % 3600 / 60)} min`;
+}
 export function formatMission(sec) {
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
   return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min ${Math.floor(sec % 60)} s`;

@@ -413,7 +413,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     len = len || d * 0.7;
     const from = point.clone().addScaledVector(new THREE.Vector3(dir.x, dir.y, dir.z), -len);
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, point]), new THREE.LineBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
-    const glow = new THREE.Mesh(new THREE.SphereGeometry(Math.min(d, len * 2) * 0.012, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
+    // a small flash where it enters: smaller still for background particles, which come in numbers
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(Math.min(d, len * 2) * (len > 1 ? 0.0025 : 0.008), 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a4f, transparent: true, depthTest: false }));
     line.renderOrder = glow.renderOrder = 20; glow.position.copy(point);
     scene.add(line, glow); beams.push({ line, glow, t0: performance.now() }); dirty = true;
   }

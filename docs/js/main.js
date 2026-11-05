@@ -3,7 +3,7 @@ import { $, bus, hexAddr, loadImages } from "./util.js";
 import { FlightComputer, SCRUB_MS, BOOT_WINDOW_MS } from "./hardware.js";
 import { createBoard } from "./board3d.js";
 import { createMissions } from "./missions.js";
-import { Background, ENVIRONMENTS, WARPS, PARTICLES, formatMission } from "./radiation.js";
+import { Background, ENVIRONMENTS, WARPS, PARTICLES, formatMission, formatShort } from "./radiation.js";
 import os, { commands, calcExpected, calcOk } from "./os/linux-cfs.js";   // swap the adapter to try another OS
 
 const STATE_TEXT = {
@@ -50,7 +50,20 @@ function renderStatus() {
   $("where").textContent = board ? (board.hover || (board.level !== "none" ? board.center() : "")) : "";
 }
 // how the computer is holding up under background radiation
+// the mission board, top right
+function renderBoard() {
+  const s = bg.s, up = s.realS ? 100 * s.upS / s.realS : null, nRes = Object.values(s.resets).reduce((a, n) => a + n, 0);
+  $("m-t").textContent = s.started ? `T+ ${formatMission(s.missionS)}` : "T− launch";
+  const u = $("m-up"); u.textContent = up === null ? "–" : (up >= 99.95 && up < 100 ? up.toFixed(2) : up.toFixed(1)) + "%"; u.className = up === null ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad";
+  $("m-down").textContent = formatShort(s.downS); $("m-down").className = s.downS > 0 ? "warn" : "";
+  $("m-out").textContent = s.outages; $("m-out").className = s.outages ? "bad" : "";
+  $("m-res").textContent = nRes;
+  $("m-bits").textContent = s.bits.toLocaleString("en-US");
+  $("m-ecc").textContent = ((s.out.corrected || 0)).toLocaleString("en-US");
+  $("m-note").textContent = bg.on ? `clock ×${bg.warp.toLocaleString("en-US")} (${WARPS.find((w) => w.s === bg.warp)?.label || ""}) · uptime and downtime in real time` : "clock runs at 1× · background radiation off";
+}
 function renderSurvival() {
+  renderBoard();
   const s = bg.s, up = s.realS ? (100 * s.upS / s.realS) : 0, o = s.out, resets = Object.entries(s.resets);
   $("survival").innerHTML = `
     <div><span class="k">Mission time</span><b>${formatMission(s.missionS)}</b></div>
@@ -114,7 +127,7 @@ async function start() {
   bus.on("telemetry", () => { if ($("tlm-box").open) $("tlm").textContent = [...fc.tlmCounts].sort((a, b) => a[0] - b[0]).map(([m, n]) => "0x" + m.toString(16).padStart(4, "0") + "  " + n).join("\n"); });
   let lastLevel = "none";
   setInterval(() => { fc.tick(); renderStatus(); }, 1000);
-  setInterval(() => { if (board.level !== lastLevel) { lastLevel = board.level; bus.emit("zoom", { fc, level: lastLevel }); } $("where").textContent = board.hover || (board.level !== "none" ? board.center() : ""); }, 300);
+  setInterval(() => { if (board.level !== lastLevel) { lastLevel = board.level; bus.emit("zoom", { fc, level: lastLevel }); } $("where").textContent = board.hover || (board.level !== "none" ? board.center() : ""); renderBoard(); }, 300);
   setInterval(() => { if (fc.operational) fc.requestMap(); }, 15000);   // memory layout drifts as software runs
   renderControls(); renderStatus(); renderLog();
   window.sim = { fc, board, missions, applySetup, desired, calcOk, zoomToCopy, os, commands, bg };
@@ -128,7 +141,7 @@ $("particle").onclick = (e) => { const b = e.target.closest("button"); if (b) ap
 $("bg-on").onclick = () => applySetup({ bg: !bg.on });
 $("bg-env").onchange = () => applySetup({ env: $("bg-env").value });
 $("bg-warp").onchange = () => applySetup({ warp: +$("bg-warp").value });
-$("bg-reset").onclick = () => { bg.resetStats(); renderSurvival(); };
+$("bg-reset").onclick = () => { bg.resetStats(); renderSurvival(); fc.log("Mission clock and statistics reset"); };
 $("power").onclick = () => { fc.log("GROUND: power cycle commanded"); fc.powerCycle("ground command"); };
 $("restore").onclick = () => fc.restoreSd();
 $("facts").addEventListener("click", (e) => {

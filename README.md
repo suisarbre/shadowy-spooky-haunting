@@ -98,6 +98,14 @@ Cells flipped, by angle from vertical. A steep particle flips one cell. A low-an
 
 **The direction matters as much as the angle.** One row of the chip is 16 bytes, which is two ECC words. A line of upsets **along a row** stays inside one word: ECC detects it but cannot fix it, and in used memory that means a machine check and a reset. The same particle **across rows** puts one bit in each of several words, and ECC corrects them all. This is why real memory interleaves its cells, and mission 4 lets you see it by turning the board.
 
+## Mission board
+
+The top right corner always shows the mission so far, with a Reset button that starts it again:
+- **T+**: mission elapsed time. It is time-warped while background radiation is on, and runs at 1× otherwise. Launch (T+0) is the first time the flight software comes up.
+- **Uptime and downtime**: share of real time the flight software was up, and how long it was down. These are in real time, because the software runs in real time: a 30 s reboot is 30 s, however fast the radiation clock runs.
+- **Outages**: times the flight software went from up to down (crash, hang, reset, boot loop).
+- **Resets, bit upsets, ECC fixed**: counted from every source, clicks and background alike.
+
 ## Background radiation
 
 Particles arrive at random points on the board from random directions. Through a flat surface the flux goes as cos(angle), and the spectrum is mostly light ions (90% light, 9.5% heavy, 0.5% very heavy).
