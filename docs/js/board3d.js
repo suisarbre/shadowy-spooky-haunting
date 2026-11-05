@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";   // three.js r160, bundled
 import { hex2, hexAddr } from "./util.js";
 import { WORD } from "./ecc.js";
-import { track, PARTICLES, randomDirection, randomParticle } from "./radiation.js";
+import { track, PARTICLES, randomDirection, randomParticle, FLARE_SPECTRUM } from "./radiation.js";
 
 export const COLORS = { free: "#161b22", kernel: "#8957e5", fsw: "#1f6feb", app: "#2ea043", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
 const RGB = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16))]));
@@ -426,7 +426,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     const tracks = [];
     if (kind === "flare") {
       const R = PX * 3;
-      for (let i = 0; i < 48; i++) tracks.push({ X: X + (Math.random() * 2 - 1) * R, Y: Y + (Math.random() * 2 - 1) * R, dir: randomDirection(), let: PARTICLES[randomParticle()].let * 1.5 });
+      for (let i = 0; i < 48; i++) tracks.push({ X: X + (Math.random() * 2 - 1) * R, Y: Y + (Math.random() * 2 - 1) * R, dir: randomDirection(), let: PARTICLES[randomParticle(Math.random, FLARE_SPECTRUM)].let });
     } else tracks.push({ X, Y, dir, let: PARTICLES[kind] ? PARTICLES[kind].let : 0 });
     const bytes = new Map(), now = performance.now();
     let cells = 0;
@@ -440,7 +440,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     }
     const list = [...bytes].map(([addr, mask]) => (s.kind === "ram" ? { pa: addr, mask } : { index: addr, mask }));
     const result = !list.length ? { none: true } : s.kind === "ram" ? fc.hitRamMany(list, { quiet }) : fc.hitSdMany(list, { quiet });
-    if (!quiet || overlay.level !== "none" || dist() > 1.5) showBeam(s.mesh.localToWorld(s.local(X, Y)), toWorldDir(kind === "flare" ? DOWN : dir), quiet ? 3 : 0);
+    if (!quiet || ((overlay.level !== "none" || dist() > 1.5) && beams.length < 30)) showBeam(s.mesh.localToWorld(s.local(X, Y)), toWorldDir(kind === "flare" ? DOWN : dir), quiet ? 3 : 0);
     if (result && result.none && !quiet) fc.log(`${PARTICLES[kind] ? PARTICLES[kind].label : "burst"} at ${angleOf(dir)}° from vertical passed through without flipping anything (too little charge per cell)`);
     redrawSoon();
     const { addr, bit } = s.at(X, Y);
@@ -455,10 +455,10 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   };
   function randomStrike(kind, dir) {
     const x = (Math.random() - 0.5) * 9, z = (Math.random() - 0.5) * 6.6, hit = surfaceAt(x, z);
-    if (!hit) { if (overlay.level === "none") showBeam(group.localToWorld(new THREE.Vector3(x, 0.08, z)), toWorldDir(dir), 3); return { surface: "board" }; }
+    if (!hit) { if (overlay.level === "none" && beams.length < 30) showBeam(group.localToWorld(new THREE.Vector3(x, 0.08, z)), toWorldDir(dir), 3); return { surface: "board" }; }
     // NAND flash cells hold far more charge than DRAM cells, and the card's controller has
     // its own ECC: only a small share of the particles that reach it leave damage behind
-    if (hit.s.kind === "sd" && Math.random() > SD_DAMAGE_SHARE) { if (overlay.level === "none") showBeam(hit.s.mesh.localToWorld(hit.s.local(hit.X, hit.Y)), toWorldDir(dir), 3); return { surface: "sd", harmless: true }; }
+    if (hit.s.kind === "sd" && Math.random() > SD_DAMAGE_SHARE) { if (overlay.level === "none" && beams.length < 30) showBeam(hit.s.mesh.localToWorld(hit.s.local(hit.X, hit.Y)), toWorldDir(dir), 3); return { surface: "sd", harmless: true }; }
     strike(hit.s, hit.X, hit.Y, kind, dir, { quiet: true });
     return { surface: hit.s.kind };
   }
@@ -590,6 +590,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     // for tests: fire at an address (RAM or SD) and bit; dir in chip axes, default straight down
     strikeAt(kind, addr, bit = 0, particleKind = "bit", dir = DOWN) { const s = kind === "sd" ? sd : ram, { X, Y } = s.xy(addr, bit); return strike(s, X, Y, particleKind, dir); },
     randomStrike,
+    // the share of the board's area that is RAM (background particles land uniformly on the board)
+    ramShare: (ram.w * ram.d) / (9 * 6.6),
     onMap: () => drawBase(ram), onSd: refreshSd, redraw,
     _cam: () => ({ t: controls.target.toArray().map((v) => +v.toFixed(5)), c: camera.position.toArray().map((v) => +v.toFixed(5)), auto: controls.autoRotate, sat: [sat.rotation.x, sat.rotation.z].map((v) => +v.toFixed(4)) }),
     _debug: () => { const r = overlay.region; return r && { kind: r.s.kind, X0: r.X0, Y0: r.Y0, X1: r.X1, Y1: r.Y1, level: overlay.level, canvas: [overlay.canvas.width, overlay.canvas.height], start: r.s.at(r.X0, r.Y0), dist: camera.position.distanceTo(controls.target), png: overlay.canvas.toDataURL() }; },

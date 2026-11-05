@@ -59,7 +59,9 @@ function renderBoard() {
   $("m-res").textContent = nRes;
   $("m-bits").textContent = s.bits.toLocaleString("en-US");
   $("m-ecc").textContent = ((s.out.corrected || 0)).toLocaleString("en-US");
-  $("m-note").textContent = !bg.on ? "clock runs at 1× · background radiation off" : fc.operational ? `clock ×${bg.warp.toLocaleString("en-US")} (${WARPS.find((w) => w.s === bg.warp)?.label || ""}) · warp pauses during outages` : "flight software down: clock at 1× until it is back";
+  // what this environment means in orbit: expected RAM upsets per day, or days per upset
+  const perDay = bg.upsetsPerDay, every = perDay >= 1 ? `≈${perDay.toPrecision(2)} RAM upsets per day` : `≈1 RAM upset every ${(1 / perDay).toPrecision(2)} days`;
+  $("m-note").textContent = !bg.on ? "clock runs at 1× · background radiation off" : !fc.operational ? "flight software down: clock at 1× until it is back" : `${every} in orbit · ${WARPS.find((w) => w.s === bg.warp)?.label || ""}${bg.capped ? " · rate capped: the page cannot keep up" : ""} · warp pauses during outages`;
 }
 function renderSurvival() {
   renderBoard();

@@ -98,22 +98,28 @@ The top right corner always shows the mission so far, with a Reset button that s
 - **Outages**: times the flight software went from up to down (crash, hang, reset, boot loop).
 - **Resets, bit upsets, ECC fixed**: counted from every source, clicks and background alike.
 
-## Background radiation
+## Background radiation, calibrated to flight data
 
-Particles arrive at random points on the board from random directions. Through a flat surface the flux goes as cos(angle), and the spectrum is mostly light ions (90% light, 9.5% heavy, 0.5% very heavy).
+Particles arrive at random points on the board from random directions (cosine-weighted, as flux through a flat surface). The rate is not set by hand. At start-up the page measures how many bits one particle flips on average (0.32, by Monte Carlo over the spectrum and all directions) and chooses the particle flux that gives the design upset rate on the RAM.
 
-| Environment | Particles per mission day on the board |
-|---|---|
-| Quiet low Earth orbit | 0.25 |
-| South Atlantic Anomaly pass | 10 |
-| Solar particle event | 150 |
-| Stress test | 15,000 (far beyond reality) |
+**Design point: 1 × 10⁻¹¹ upsets per bit per day, LEO orbit average, modern SDRAM.** NASA's solid-state recorder guidelines put SDRAM at 10⁻¹³ to 10⁻¹¹ per bit-day; LRO's 512 Mbit SDRAM measured about 6.8 × 10⁻¹². LEO adds the South Atlantic Anomaly's trapped protons, so the average is set at the top of that range. For 64 MB that is about one upset every six months. (Older COTS DRAM flew at around 10⁻⁷: SeaStar's recorders saw 170–255 upsets a day.)
 
-These are **illustrative orders of magnitude**, not data for one device. A modern SDRAM in LEO sees roughly one upset in 64 MB every few weeks, and one example (Gaia's SDRAM) ran 1.5–4.3× its usual rate during solar particle events.
+| Environment | × orbit average | RAM upsets (64 MB) | Basis |
+|---|---|---|---|
+| LEO orbit average | 1 | 1 per ~190 days | design point above |
+| LEO outside the SAA | 0.25 | 1 per ~2 years | SeaStar: 80% of upsets inside the SAA in under 20% of the orbit |
+| Inside the SAA | 4 | 1 per ~47 days | same |
+| Solar particle event (as observed) | 10 | 1 per ~19 days | 5–20× background: SeaStar ~5×, TDRS-1 10–20×, CREAM 3–6× |
+| Design worst day (CREME96) | 1,500 | ~9 per day | CREME96 worst day predicted ~1,500× SeaStar's background, 2–3 orders above what flew |
+| Accelerated test | 3,000,000 | far beyond reality | like a beam test: to see what each layer does when overwhelmed |
 
-Time warp runs from 1 minute to 1 week of mission time per second, capped at 40 particles per real second. Only the radiation is warped, and only while the flight software is up: outages play out at 1×, so uptime comes out as it would for a real satellite.
+**Spectrum:** 99.12% light ions, 0.8% heavy, 0.08% very heavy, which makes about 3% of upset events multi-cell, within flight experience (1–20% on older DRAM, 1.4% on Alsat-1, rare on modern SDRAM). A flare burst uses a harder mix (90 / 9 / 1%).
 
-Only 2% of background particles that reach the SD card leave damage. NAND flash cells hold far more charge than DRAM cells and the card's controller has its own ECC; without this factor a stress run destroys the card within seconds. Clicked SD hits always land.
+**Time warp** runs from real time to 1 year per second, and only while the flight software is up (see the mission board). The page simulates up to 300 particles per real second; beyond that the rate is capped and the board says so.
+
+Only 2% of background particles that reach the SD card leave damage: NAND flash cells hold far more charge than DRAM cells and the card's controller has its own ECC. Clicked SD hits always land.
+
+These numbers are a design basis assembled from published flight data, not a prediction for one part; a real mission would run its parts' beam-test cross sections through an orbit model (AP-8 trapped protons, CREME96 cosmic rays and solar particles, typically 1 g/cm² of shielding, e.g. in SPENVIS).
 
 ## Software TMR inside one computer
 
