@@ -18,7 +18,7 @@ result("boots to OPERATIONAL with a memory map and calculator telemetry", await 
 await ev(() => { localStorage.clear(); sim.missions.select("break"); });
 
 // ---- semantic zoom ----
-await ev(() => sim.zoomToCopy(2)); await sleep(2200);
+await ev(() => sim.zoomToCopy(2)); await sleep(3200);
 let z = await ev(() => ({ level: sim.board.level, where: sim.board.center() }));
 result("fly to TMR copy 2: zoomed to readable bits", z.level === "text" && /tmr:CALC:2/.test(z.where), `${z.level} · ${z.where}`);
 await p.screenshot({ path: "test-zoom.png" });

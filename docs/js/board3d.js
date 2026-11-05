@@ -257,7 +257,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     }
     // at most this many cells across and down, centred on the middle of the screen, so a refresh stays cheap
     // (bytes covers everything in view and samples it down; bits and text are capped)
-    const unit = level === "bytes" ? 8 : 1, [capX, capY] = { bytes: [8192, 16384], bits: [640, 640], text: [140, 100] }[level];
+    const unit = level === "bytes" ? 8 : 1, [capX, capY] = { bytes: [8192, 16384], bits: [512, 512], text: [140, 100] }[level];
     const cx = c.X, cy = c.Y;
     X0 = Math.max(0, X0, cx - capX / 2 * unit); X1 = Math.min(s.TX, X1, cx + capX / 2 * unit);
     Y0 = Math.max(0, Y0, cy - capY / 2); Y1 = Math.min(s.TY, Y1, cy + capY / 2);
@@ -289,7 +289,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     const keep = overlay.prev && overlay.prev.key === key;
     if (level === "bytes") {
       // one texel per byte (or per few bytes when the view is wide), tinted by owner and shaded by value
-      const nbx = (X1 - X0) / 8, H = Y1 - Y0, sx = Math.ceil(nbx / 1024), sy = Math.ceil(H / 1024);
+      const nbx = (X1 - X0) / 8, H = Y1 - Y0, sx = Math.ceil(nbx / 512), sy = Math.ceil(H / 512);
       const W = Math.ceil(nbx / sx), Hc = Math.ceil(H / sy); cv.width = W; cv.height = Hc;
       const g = cv.getContext("2d"), img = g.createImageData(W, Hc), d = img.data;
       for (let yy = 0; yy < Hc; yy++) {
@@ -567,7 +567,8 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       if (a <= 0) { scene.remove(b.line, b.glow); b.line.geometry.dispose(); b.glow.geometry.dispose(); beams.splice(i, 1); continue; }
       b.line.material.opacity = a; b.glow.material.opacity = a; b.glow.scale.setScalar(1 + (1 - a) * 3);
     }
-    if (overlayDue && now - lastOverlay > 70) updateOverlay();
+    // redraw less often while the view is moving, so moving stays smooth
+    if (overlayDue && now - lastOverlay > (flight || touching ? 160 : 70)) updateOverlay();
     if (controls.update() || beams.length || dirty || controls.autoRotate) { renderer.render(scene, camera); dirty = false; }
   }
   requestAnimationFrame(animate);
