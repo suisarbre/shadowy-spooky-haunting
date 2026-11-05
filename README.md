@@ -25,7 +25,7 @@ The flight computer boots into cFS in about 14 s. No special server headers are 
 
 | | iOBC | This emulation |
 |---|---|---|
-| CPU | 32-bit ARM9, 400 MHz | 32-bit x86 (v86 emulates only x86). cFS is the same code either way thanks to OSAL. CPU hits are not modelled. |
+| CPU | 32-bit ARM9, 400 MHz | 32-bit x86 (v86 emulates only x86). cFS is the same code either way thanks to OSAL. Its registers are a target (below); caches and logic are not modelled. |
 | RAM | 64 MB SDRAM | 64 MB, plus ~9 MB where v86's loader stages the boot image (it always places it at the 64 MB mark; the kernel frees it after unpacking). Optional SECDED ECC in the memory controller. |
 | Non-volatile, upset-immune memory | 512 KB FRAM | Holds the boot record: boot count, failed boots in a row, last reset cause. Survives resets; hits have no effect. |
 | Storage | SD card | Kernel + root filesystem. Hits are latent until the next boot. The card's own internal ECC is not modelled: a hit stands for damage beyond what it corrects. |
@@ -96,7 +96,7 @@ The top right corner always shows the mission so far, with a Reset button that s
 - **T+**: mission elapsed time. It is time-warped while background radiation is on, and runs at 1× otherwise. Launch (T+0) is the first time the flight software comes up.
 - **Uptime and downtime**: share of mission time the flight software was up, and how long it was down. Time warp runs only while the flight software is up; during an outage the clock and the radiation drop back to 1×. The software runs in real time, so a reboot costs its real ~30 s of mission time, as it would in orbit. Measuring uptime in real time instead would inflate every outage by the warp factor (a 30 s reboot at 1 week per second would count as 30 weeks).
 - **Outages**: times the flight software went from up to down (crash, hang, reset, boot loop).
-- **Resets, bit upsets, ECC fixed**: counted from every source, clicks and background alike.
+- **RAM upsets, ECC fixed, CPU upsets**: counted from every source, clicks and background alike (resets are in the Status panel).
 
 ## Background radiation, calibrated to flight data
 
@@ -120,6 +120,24 @@ Particles arrive at random points on the board from random directions (cosine-we
 Only 2% of background particles that reach the SD card leave damage: NAND flash cells hold far more charge than DRAM cells and the card's controller has its own ECC. Clicked SD hits always land.
 
 These numbers are a design basis assembled from published flight data, not a prediction for one part; a real mission would run its parts' beam-test cross sections through an orbit model (AP-8 trapped protons, CREME96 cosmic rays and solar particles, typically 1 g/cm² of shielding, e.g. in SPENVIS).
+
+## The CPU: registers as a physical target
+
+Zoom onto the CPU and its top is a die floorplan: every architectural register of the emulated x86, one cell per bit, most significant bit on the left, showing its live value. A particle there runs through the same track model as on the memory, and the bits it flips are written straight into the running CPU's state (`fc.hitCpu`, through v86's register arrays):
+
+| Block | Registers | Bits |
+|---|---|---|
+| Integer | EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI | 8 × 32 |
+| Control | EIP, EFLAGS, CR0, CR2, CR3, CR4 | 6 × 32 |
+| Segments | ES, CS, SS, DS, FS, GS | 6 × 16 |
+| SSE | XMM0–7, 4 lanes of 32 | 32 × 32 |
+| x87 FPU | ST0–7 (low 64 bits of each) | 16 × 32 |
+
+That is 2,080 bits. Nothing protects them: no ECC, no scrubber. What happens next depends on the bit: most land in a register that is overwritten before it is read (masked), some give a wrong result, a flipped pointer or EIP usually crashes the kernel and the watchdog takes over. Some control bits (paging on/off in CR0, PAE in CR4, a code-segment selector, virtual-8086 mode in EFLAGS) put the emulator in a state it cannot continue from: v86 stops with a trap, which the page treats as a CPU lockup. The core stops, nothing more is printed or kicked, and only the watchdog (or a power cycle) brings it back, as on real hardware.
+
+**Drawn enlarged, calibrated per bit.** On a real die the registers are a sliver of the area; here they fill most of it so you can see and aim at them. So the background rate is not set by area but per register bit: **2 × 10⁻⁷ upsets per bit per day** (commercial 65 nm flip-flops in LEO, 1.6–4.1 × 10⁻⁷ from heavy-ion and proton data). Flip-flops are about 20,000× more sensitive per bit than the SDRAM, but there are 260,000× fewer of them: in the orbit average that is one CPU upset every ~6.6 years, against one RAM upset every ~190 days. The die gets its own particle stream sized for that.
+
+**Not modelled:** the L1 cache and the pipeline logic are shown greyed out. v86 emulates no cache, and has no gate-level logic to flip; a hit there does nothing. A real processor's cache is usually parity- or ECC-protected; its logic upsets (single-event transients) are mostly masked.
 
 ## Software TMR inside one computer
 
@@ -205,7 +223,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 | `test/test-watchdog.mjs` | Node + v86 | 9/9 |
 | `test/test-tmr.mjs` | Node + v86 | 12/12 |
 | `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
-| `test/browser-lab.mjs` | Chrome | 28/28 (below) |
+| `test/browser-lab.mjs` | Chrome | 36/36 (below) |
 | `test/test-ecc.mjs` | Node | 66/66: every 1-, 2- and 3-bit error |
 
 `browser-lab.mjs` checks the following:
@@ -214,6 +232,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 - Zooming to a TMR copy reaches readable bits, and a real click flips exactly the bit under the pointer.
 - The vote repairs a flipped copy; with TMR off the answer goes wrong.
 - Every ECC outcome: corrected, detected in free memory, silent 3-bit, scrub, ECC off revealing hidden errors, and a 2-bit machine check resetting the computer.
+- CPU: a single-bit hit flips exactly that register bit (bit 31 too); a heavy ion along a row flips a run of bits in one register; a light ion straight down flips one; background upsets on the die match the per-bit rate; flipping CR0.PG locks the CPU up and the watchdog recovers it.
 - The watchdog recovers a killed flight software.
 - The particle shower lands its bits.
 - An SD hit leads to a boot loop, and restoring the card recovers it.

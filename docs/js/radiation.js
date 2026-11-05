@@ -13,6 +13,7 @@
 // line lies: along a row it stays inside one 8-byte word, across rows it spreads
 // over different words.
 import { bus } from "./util.js";
+import { CPU_BITS } from "./hardware.js";
 
 export const DEPTH = 2, QCRIT = 1, SHARE = 0.15, MAX_TRACK = 40;
 export const PARTICLES = {
@@ -59,6 +60,11 @@ export function randomParticle(rand = Math.random, mix = SPECTRUM) { const r = r
 // LEO adds the South Atlantic Anomaly's protons, so the orbit average is set at the top of that
 // range: 1e-11 upsets per bit per day, about one upset in 64 MB every six months.
 export const RATE_PER_BIT_DAY = 1e-11;
+// CPU registers are flip-flops, not DRAM cells, and far more sensitive per bit: heavy-ion and proton
+// data for commercial 65 nm flip-flops in LEO give about 1.6e-7 to 4.1e-7 upsets per bit per day.
+// Design point 2e-7. There are only ~2,000 register bits, so the CPU sees roughly a tenth as many
+// upsets as the 64 MB of RAM, but nothing corrects them.
+export const CPU_RATE_PER_BIT_DAY = 2e-7;
 // Each environment is a multiple of that orbit average, from flight data:
 //  - SeaStar (705 km): over 80% of upsets inside the SAA in under 20% of the orbit, so
 //    inside the SAA ~4x the average and outside it ~0.25x
@@ -102,6 +108,9 @@ export class Background {
     const m = meanCellsPerParticle();
     this.cal = { cellsPerParticle: m.cells, multiShare: m.multiShare, ramBits: fc.pages * 4096 * 8, ramShare: board.ramShare };
     this.cal.particlesPerDay = RATE_PER_BIT_DAY * this.cal.ramBits / (board.ramShare * m.cells);
+    // the CPU die gets its own particles: register cells are drawn enlarged, so the rate is set per register bit
+    this.cal.cpuBits = CPU_BITS;
+    this.cal.cpuParticlesPerDay = CPU_RATE_PER_BIT_DAY * CPU_BITS / (board.dieRegShare * m.cells);
     this.resetStats();
     let last = performance.now();
     setInterval(() => { const now = performance.now(), dt = (now - last) / 1000; last = now; this.step(Math.min(dt, 1)); }, 100);
@@ -109,6 +118,7 @@ export class Background {
     // the flight software is up: that moment is launch, T+0
     const live = () => this.s.started;
     bus.on("ram-hit", (e) => { if (!live()) return; this.s.bits += e.bits || 0; for (const [k, n] of Object.entries(e.outcomes || {})) this.s.out[k] = (this.s.out[k] || 0) + n; });
+    bus.on("cpu-hit", (e) => { if (live()) this.s.cpuBits += e.bits || 0; });
     bus.on("fsw-down", () => { if (live()) this.s.crashes++; });
     bus.on("reset", (e) => { if (live()) this.s.resets[e.reason] = (this.s.resets[e.reason] || 0) + 1; });
     bus.on("calc-wrong", () => { if (live()) this.s.wrong++; });
@@ -131,7 +141,7 @@ export class Background {
   // uptime = upS / missionS means what it means for a real satellite.
   resetStats() {
     const up = this.fc.operational;
-    this.s = { started: up, missionS: 0, realS: 0, upS: 0, downS: 0, outages: 0, strikes: 0, ram: 0, sd: 0, bits: 0, out: {}, crashes: 0, resets: {}, wrong: 0, tmrRepairs: 0 };
+    this.s = { started: up, missionS: 0, realS: 0, upS: 0, downS: 0, outages: 0, strikes: 0, ram: 0, sd: 0, cpu: 0, bits: 0, cpuBits: 0, out: {}, crashes: 0, resets: {}, wrong: 0, tmrRepairs: 0 };
     this.lastRepairs = null; this.wasUp = up;
     bus.emit("stats-reset", { bg: this });
   }
@@ -144,11 +154,12 @@ export class Background {
   // the warp in force right now: none while the flight software is down
   get warpNow() { return this.on && this.fc.operational ? this.warp : 1; }
   // particles per real second on the board, and whether the page had to cap it
-  get wanted() { return this.cal.particlesPerDay * ENVIRONMENTS[this.env].factor / 86400 * this.warpNow; }
+  get wanted() { return (this.cal.particlesPerDay + this.cal.cpuParticlesPerDay) * ENVIRONMENTS[this.env].factor / 86400 * this.warpNow; }
   get rate() { return Math.min(this.wanted, MAX_STRIKES_PER_S); }
   get capped() { return this.on && this.wanted > MAX_STRIKES_PER_S; }
   // expected RAM upsets per day of mission time in this environment, and per real second now
   get upsetsPerDay() { return RATE_PER_BIT_DAY * ENVIRONMENTS[this.env].factor * this.cal.ramBits; }
+  get cpuUpsetsPerDay() { return CPU_RATE_PER_BIT_DAY * ENVIRONMENTS[this.env].factor * CPU_BITS; }
   step(dt) {
     const s = this.s;
     if (s.started) {
@@ -158,7 +169,9 @@ export class Background {
     }
     if (!this.on) return;
     let n = poisson(this.rate * dt);
+    const cpuShare = this.cal.cpuParticlesPerDay / (this.cal.particlesPerDay + this.cal.cpuParticlesPerDay);
     while (n-- > 0) {
+      if (Math.random() < cpuShare) { this.board.randomCpuStrike(randomParticle(), randomDirection()); s.strikes++; s.cpu++; continue; }
       const r = this.board.randomStrike(randomParticle(), randomDirection());
       s.strikes++; if (r && r.surface === "ram") s.ram++; if (r && r.surface === "sd") s.sd++;
     }

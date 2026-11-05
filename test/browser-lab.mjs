@@ -62,7 +62,7 @@ result("ECC on, 1 bit: corrected, memory reads right, the cell is still flipped"
 r = await ev((pa) => ({ o: sim.board.strikeAt("ram", pa + 1, 0).outcome, state: sim.fc.state }), free);
 result("second bit in the same word, free memory: detected, no reset (nothing reads it)", r.o === "detected-unused" && r.state === "operational", JSON.stringify(r));
 await ev(() => sim.fc.scrub());
-r = await ev((pa) => ({ latent: sim.fc.ecc.latent.size, retired: /retired/.test(sim.fc.events.at(-1).line) }), free);
+r = await ev((pa) => ({ latent: sim.fc.ecc.latent.size, retired: sim.fc.events.slice(-5).some((e) => /retired/.test(e.line)) }), free);
 result("scrubber reports the uncorrectable word in free memory", r.latent === 0 && r.retired, JSON.stringify(r));
 // three bits of one byte whose Hamming positions XOR to 0: the decoder sees nothing
 r = await ev((pa) => { const before = sim.fc.readRam(pa, 1)[0]; const outs = [0, 1, 2].map((k) => sim.board.strikeAt("ram", pa, k).outcome); return { outs, before, after: sim.fc.readRam(pa, 1)[0] }; }, free + 8);
@@ -98,6 +98,32 @@ if (!(await ev(() => sim.fc.operational))) await up();
 // time warp pauses while the flight software is down, so outages cost their real duration
 r = await ev(() => { sim.applySetup({ bg: true, env: "quiet", warp: 604800 }); const upWarp = sim.bg.warpNow; const was = sim.fc.operational; sim.fc.operational = false; const downWarp = sim.bg.warpNow; sim.fc.operational = was; sim.applySetup({ bg: false }); return { upWarp, downWarp }; });
 result("time warp runs only while the flight software is up", r.upWarp === 604800 && r.downWarp === 1, JSON.stringify(r));
+
+// ---- CPU registers: a physical target on the die ----
+if (!(await ev(() => sim.fc.operational))) await up();
+r = await ev(() => { const before = sim.fc.cpuState().reg_xmm32s[31] >>> 0; const h = sim.board.strikeCpu("XMM7.3", 9); const after = sim.fc.cpuState().reg_xmm32s[31] >>> 0; return { x: (before ^ after) >>> 0, bits: h && h.bits }; });
+result("CPU: a single-bit hit flips exactly that register bit", r.x === 1 << 9 && r.bits === 1, JSON.stringify(r));
+// bit 31 (the sign bit) once hung the page: a signed shift in popcount never reached zero
+r = await ev(() => { const before = sim.fc.cpuState().reg_xmm32s[30] >>> 0; const h = sim.board.strikeCpu("XMM7.2", 31); return { x: ((sim.fc.cpuState().reg_xmm32s[30] >>> 0) ^ before) >>> 0, bits: h && h.bits }; });
+result("CPU: a hit on bit 31 flips the sign bit (and returns)", r.x === 0x80000000 && r.bits === 1, JSON.stringify(r));
+r = await ev((d) => { const h = sim.board.strikeCpu("XMM7.2", 20, "heavy", d); return h && { bits: h.bits, regs: h.changes.map((c) => c.name) }; }, deg(80, true));
+result("CPU: a heavy ion at a low angle along a row flips a run of bits in one register", r && r.bits >= 3 && r.regs.length === 1 && r.regs[0] === "XMM7.2", JSON.stringify(r));
+r = await ev((d) => { const h = sim.board.strikeCpu("XMM7.1", 4, "light", d); return h && { none: !!h.none, bits: h.bits }; }, deg(0, true));
+result("CPU: a light ion straight down flips one bit", r && r.bits === 1, JSON.stringify(r));
+// background on the die, calibrated per register bit (2e-7 upsets per bit per day)
+await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 100 }); });
+await sleep(15000);
+r = await ev(() => { sim.applySetup({ bg: false }); const s = sim.bg.s; return { cpuBits: s.cpuBits, cpu: s.cpu, days: s.missionS / 86400, perDay: sim.bg.cpuUpsetsPerDay, board: document.getElementById("m-cpu").textContent }; });
+const ratio = r.cpuBits / (r.perDay * r.days);
+result("CPU background upsets match the per-bit rate", r.cpu > 20 && ratio > 0.5 && ratio < 1.7 && r.board === String(r.cpuBits), `${r.cpuBits} bits from ${r.cpu} particles, expected ${(r.perDay * r.days).toFixed(1)} (ratio ${ratio.toFixed(2)})`);
+// that much radiation also damages the SD card: restore it, then reboot clean
+await ev(() => { sim.fc.restoreSd(); sim.fc.powerCycle("ground command"); });
+result("...after the accelerated test, a restored card boots clean", await up(), await ev(() => sim.fc.state));
+// paging switched off under the kernel (CR0 bit 31): the CPU locks up, the watchdog resets it
+await ev(() => sim.applySetup({ watchdog: true }));
+await ev(() => sim.board.strikeCpu("CR0", 31));
+result("CPU: CR0.PG flipped: the CPU locks up", await until(() => sim.fc.state === "lockup", null, 8000), await ev(() => sim.fc.state));
+result("...the watchdog resets it and it comes back", (await until(() => sim.fc.fram.lastReset === "watchdog", null, 40000)) && (await up()), await ev(() => sim.fc.fram.lastReset));
 
 // ---- watchdog ----
 await ev(() => sim.applySetup({ watchdog: true }));

@@ -3,7 +3,7 @@ export const $ = (id) => document.getElementById(id);
 export const BUILD = window.BUILD;   // set in index.html; bump it whenever the VM images change
 export const hex2 = (v) => v.toString(16).padStart(2, "0");
 export const hexAddr = (pa) => "0x" + pa.toString(16).padStart(7, "0");
-export const popcount = (m) => { let n = 0; for (let x = m; x; x >>= 1) n += x & 1; return n; };
+export const popcount = (m) => { let n = 0; for (let x = m; x; x >>>= 1) n += x & 1; return n; };
 
 // A tiny event bus: hardware and the OS adapter emit, the UI listens.
 const listeners = new Map();

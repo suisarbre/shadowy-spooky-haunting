@@ -159,9 +159,9 @@
     <div><span class="lbl">Uptime</span><b id="m-up">–</b></div>
     <div><span class="lbl">Downtime</span><b id="m-down">0 s</b></div>
     <div><span class="lbl">Outages</span><b id="m-out">0</b></div>
-    <div><span class="lbl">Resets</span><b id="m-res">0</b></div>
-    <div><span class="lbl">Bit upsets</span><b id="m-bits">0</b></div>
+    <div><span class="lbl">RAM upsets</span><b id="m-bits">0</b></div>
     <div><span class="lbl">ECC fixed</span><b id="m-ecc">0</b></div>
+    <div><span class="lbl">CPU upsets</span><b id="m-cpu">0</b></div>
   </div>
   <div class="mnote" id="m-note">clock runs at 1×</div>
 </section>
@@ -191,7 +191,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110513";
+window.BUILD = "2026110517";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {

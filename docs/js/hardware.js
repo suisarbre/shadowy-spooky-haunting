@@ -12,6 +12,21 @@ export const SILENCE_MS = 6000;        // telemetry gap that makes the ground as
 export const SCRUB_MS = 20000;         // the ECC scrubber reads every word of RAM once per this period
 export const RAM_MB = 64;              // iOBC SDRAM
 
+// The CPU's architectural state that a particle can upset, as v86 keeps it (32-bit x86).
+// Each entry is one row of cells on the CPU die: { name, bits, get(cpu), set(cpu, v) }.
+const r32 = (arr, i) => ({ get: (c) => c[arr][i] >>> 0, set: (c, v) => { c[arr][i] = v | 0; } });
+export const CPU_REGS = [
+  ...["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"].map((name, i) => ({ name, group: "int", bits: 32, ...r32("reg32", i) })),
+  { name: "EIP", group: "ctl", bits: 32, ...r32("instruction_pointer", 0) },
+  // v86 computes some flags lazily: settle them first, then the stored word is the real EFLAGS
+  { name: "EFLAGS", group: "ctl", bits: 32, get: (c) => c.get_eflags() >>> 0, set: (c, v) => { c.flags[0] = v | 0; c.flags_changed[0] = 0; } },
+  ...["ES", "CS", "SS", "DS", "FS", "GS"].map((name, i) => ({ name, group: "seg", bits: 16, get: (c) => c.sreg[i], set: (c, v) => { c.sreg[i] = v & 0xffff; } })),
+  ...[0, 2, 3, 4].map((i) => ({ name: "CR" + i, group: "cr", bits: 32, ...r32("cr", i) })),
+  ...[0, 1, 2, 3, 4, 5, 6, 7].flatMap((x) => [0, 1, 2, 3].map((l) => ({ name: `XMM${x}.${l}`, group: "sse", bits: 32, ...r32("reg_xmm32s", x * 4 + l) }))),
+  ...[0, 1, 2, 3, 4, 5, 6, 7].flatMap((x) => [1, 0].map((l) => ({ name: `ST${x}.${l ? "hi" : "lo"}`, group: "fpu", bits: 32, ...r32("fpu_st", x * 4 + l) }))),
+];
+export const CPU_BITS = CPU_REGS.reduce((n, r) => n + r.bits, 0);
+
 export class FlightComputer {
   constructor(os, images) {
     this.os = os; this.images = images;
@@ -53,17 +68,34 @@ export class FlightComputer {
       uart1: true, uart2: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
     });
     for (let n = 0; n < 4; n++) this.emu.add_listener(`serial${n}-output-byte`, (b) => this.onSerial(n, b));
+    // A corrupted register can put the emulator in a state it was never meant to reach, and v86
+    // stops with a WebAssembly trap. That is this model's CPU lockup: the core stops executing,
+    // nothing more is printed or kicked, and only a reset (the watchdog) brings it back.
+    const emu = this.emu;
+    emu.add_listener("emulator-ready", () => {
+      const v = emu.v86; if (!v) return; const tick = v.do_tick.bind(v);
+      v.do_tick = () => { try { tick(); } catch (e) { v.running = false; if (this.emu === emu) this.cpuLockup(e); } };
+    });
     this.emit("power-on");
   }
   async powerCycle(reason) {
     this.fram.lastReset = reason;
     const old = this.emu; this.emu = null; clearTimeout(this.bootTimer);
     this.emit("reset", { reason });
-    try { await old.destroy(); } catch (e) { /* already gone */ }
+    // a locked-up emulator never reports that it stopped, so do not wait for it for long
+    try { await Promise.race([old.destroy(), new Promise((r) => setTimeout(r, 1500))]); } catch (e) { /* already gone */ }
     this.powerOn();
   }
 
-  // state: booting | bootloop | starting | operational | lost | crashed | hung | exited | badimage | panic
+  cpuLockup(e) {
+    if (this.state === "lockup") return;
+    const was = this.operational;
+    this.operational = false; this.started = false; this.probing = false;
+    this.log(`CPU LOCKUP: the processor stopped executing (emulator trap: ${String(e && e.message || e).slice(0, 60)}) · ${this.wd.enabled ? "the watchdog will reset it" : "no watchdog: it stays stopped until a power cycle"}`);
+    this.setState("lockup");
+    if (was) this.emit("fsw-down", { why: "lockup" });
+  }
+  // state: booting | bootloop | starting | operational | lost | crashed | hung | exited | badimage | panic | lockup
   setState(state, detail = "") { this.state = state; this.stateDetail = detail; this.emit("state", { state, detail }); }
 
   sh(cmd) { if (this.emu) this.emu.serial0_send(cmd + "\n"); }
@@ -253,6 +285,29 @@ export class FlightComputer {
     this.ecc.latent.clear(); this.ecc.scrubbed += fixed; this.ecc.lastScrub = Date.now();
     if (fixed || retired) this.log(`ECC scrubber: rewrote ${fixed} corrected word(s)${retired ? `, found ${retired} uncorrectable word(s) in free memory (page retired)` : ""}`);
     this.emit("scrub", { fixed, retired });
+  }
+
+  // ---------------------------------------------------------------- CPU registers
+  // No ECC here: an upset register feeds straight into whatever the CPU does next.
+  cpuState() { return this.emu && this.emu.v86 && this.emu.v86.cpu; }
+  readReg(r) { const c = this.cpuState(); try { return c ? r.get(c) : null; } catch (e) { return null; } }
+  hitCpu(cells, { quiet = false } = {}) {
+    const c = this.cpuState(); if (!c || !cells.length) return null;
+    const masks = new Map();
+    for (const { reg, bit } of cells) masks.set(reg, (masks.get(reg) || 0) ^ (1 << bit));
+    const changes = [];
+    for (const [r, m] of masks) {
+      if (!m) continue;
+      const before = r.get(c), after = (before ^ m) >>> 0;
+      r.set(c, after); changes.push({ name: r.name, before, after: r.get(c), bits: popcount(m >>> 0) });
+    }
+    if (!changes.length) return null;
+    const bits = changes.reduce((n, x) => n + x.bits, 0), hx = (v, w) => "0x" + v.toString(16).padStart(w / 4, "0");
+    const text = changes.map((x) => { const r = CPU_REGS.find((q) => q.name === x.name); return `${x.name} ${hx(x.before, r.bits)}→${hx(x.after, r.bits)}`; }).join(", ");
+    if (!quiet) this.log(`CPU hit · ${bits} bit${bits > 1 ? "s" : ""} · ${text} · no protection: the CPU carries on with it`);
+    const r = { bits, changes, text };
+    this.emit("cpu-hit", r);
+    return r;
   }
 
   // ---------------------------------------------------------------- SD card (boot storage)

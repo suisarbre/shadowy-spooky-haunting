@@ -11,6 +11,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";   // three.js r160, bundled
 import { hex2, hexAddr } from "./util.js";
+import { CPU_REGS } from "./hardware.js";
 import { WORD } from "./ecc.js";
 import { track, PARTICLES, randomDirection, randomParticle, FLARE_SPECTRUM } from "./radiation.js";
 
@@ -45,6 +46,38 @@ class Surface {
   }
   local(X, Y) { return new THREE.Vector3(-this.w / 2 + X / this.TX * this.w, this.h / 2, -this.d / 2 + Y / this.TY * this.d); }
 }
+
+// The CPU die: a floorplan of its registers, drawn enlarged so each bit is a cell you can see and
+// hit (a real die is millimetres across and its registers a tiny part of it; the rate of background
+// hits is calibrated per register bit, not per area). Rows of cells, most significant bit on the left.
+// The caches and the pipeline logic are shown but not modelled: v86 emulates neither.
+const DIE = 80, DIE_PX = 16;
+const DIE_BLOCKS = [
+  { title: "INTEGER REGISTERS", x: 5, y: 5, regs: ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"] },
+  { title: "CONTROL", x: 5, y: 15, regs: ["EIP", "EFLAGS", "CR0", "CR2", "CR3", "CR4"] },
+  { title: "SEGMENTS", x: 5, y: 23, regs: ["ES", "CS", "SS", "DS", "FS", "GS"] },
+  { title: "SSE (XMM0-7, 4 lanes each)", x: 46, y: 5, regs: CPU_REGS.filter((r) => r.group === "sse").map((r) => r.name) },
+  { title: "x87 FPU (ST0-7)", x: 46, y: 40, regs: CPU_REGS.filter((r) => r.group === "fpu").map((r) => r.name) },
+];
+const DIE_AREAS = [
+  { name: "L1 cache", x: 2, y: 32, w: 38, h: 45, text: "L1 CACHE" },
+  { name: "pipeline and control logic", x: 42, y: 59, w: 36, h: 18, text: "PIPELINE / LOGIC" },
+];
+const dieCells = new Map();   // y * DIE + x -> { reg, bit }
+const dieRows = [];           // { reg, x, y, block }
+for (const b of DIE_BLOCKS) b.regs.forEach((name, i) => {
+  const reg = CPU_REGS.find((r) => r.name === name), y = b.y + 1 + i;
+  dieRows.push({ reg, x: b.x, y, block: b });
+  for (let k = 0; k < reg.bits; k++) dieCells.set(y * DIE + b.x + k, { reg, bit: reg.bits - 1 - k });
+});
+const dieAt = (X, Y) => {
+  X = Math.floor(X); Y = Math.floor(Y);
+  if (X < 0 || Y < 0 || X >= DIE || Y >= DIE) return null;
+  const c = dieCells.get(Y * DIE + X); if (c) return { ...c, X, Y };
+  const a = DIE_AREAS.find((a) => X >= a.x && X < a.x + a.w && Y >= a.y && Y < a.y + a.h);
+  return a ? { area: a.name, X, Y } : { X, Y };
+};
+export const DIE_REG_SHARE = dieCells.size / (DIE * DIE);   // the share of the die that is modelled register bits
 
 export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks, stageEl, hintEl }) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -144,10 +177,49 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     s.h = 0.22; s.mesh = chip(s.w, s.d, s.h, s.canvas, true);
     s.mesh.position.set(x, 0.08 + s.h / 2, -3.3 + 0.35 + s.d / 2); s.mesh.userData.kind = s.kind; s.mesh.userData.surface = s; group.add(s.mesh);
   }
-  const cpu = chip(1.8, 1.8, 0.3, label("CPU")); cpu.position.set(-2.9, 0.23, 2.15); cpu.userData.kind = "cpu"; group.add(cpu);
+  const dieCanvas = document.createElement("canvas"); dieCanvas.width = dieCanvas.height = DIE * DIE_PX;
+  const cpu = chip(1.8, 1.8, 0.3, dieCanvas); cpu.position.set(-2.9, 0.23, 2.15); cpu.userData.kind = "cpu"; group.add(cpu);
   const wdt = chip(0.9, 0.9, 0.22, label("WDT", 128, 128)); wdt.position.set(0.15, 0.19, 2.4); wdt.userData.kind = "wdt"; group.add(wdt);
   const fram = chip(1.3, 0.9, 0.2, label("FRAM", 192, 128)); fram.position.set(3.1, 0.18, 2.4); fram.userData.kind = "fram"; group.add(fram);
   const pickables = [ram.mesh, sd.mesh, cpu, wdt, fram, pcb];
+  const cpuS = { kind: "cpu", mesh: cpu, w: 1.8, d: 1.8, h: 0.3 };
+  cpu.userData.tex.anisotropy = 8;
+  const cpuHits = new Map();   // "EAX:3" -> time of the hit
+  // the die: register rows live, with the bits just hit outlined in red
+  function drawDie() {
+    const g = dieCanvas.getContext("2d"), P = DIE_PX, now = performance.now(), c = fc.cpuState();
+    g.fillStyle = "#14181e"; g.fillRect(0, 0, DIE * P, DIE * P);
+    // die edge pads
+    g.fillStyle = "#3a3220"; for (let k = 1; k < DIE - 1; k += 3) { g.fillRect(k * P, 2, P, P * 0.6); g.fillRect(k * P, DIE * P - P * 0.6 - 2, P, P * 0.6); g.fillRect(2, k * P, P * 0.6, P); g.fillRect(DIE * P - P * 0.6 - 2, k * P, P * 0.6, P); }
+    for (const a of DIE_AREAS) {
+      g.fillStyle = "#1b2027"; g.fillRect(a.x * P, a.y * P, a.w * P, a.h * P);
+      g.strokeStyle = "#2a313b"; g.lineWidth = 1;
+      for (let y = a.y; y < a.y + a.h; y += 2) { g.beginPath(); g.moveTo(a.x * P, y * P + 0.5); g.lineTo((a.x + a.w) * P, y * P + 0.5); g.stroke(); }
+      g.fillStyle = "#56606c"; g.font = `600 ${P * 1.6}px system-ui, sans-serif`; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(a.text, (a.x + a.w / 2) * P, (a.y + a.h / 2 - 1) * P);
+      g.font = `${P * 1.1}px system-ui, sans-serif`; g.fillText("not modelled", (a.x + a.w / 2) * P, (a.y + a.h / 2 + 1.2) * P);
+    }
+    g.textAlign = "left"; g.textBaseline = "middle";
+    for (const b of DIE_BLOCKS) { g.fillStyle = "#8b949e"; g.font = `600 ${P * 0.8}px system-ui, sans-serif`; g.fillText(b.title, b.x * P, (b.y + 0.5) * P); }
+    for (const k of [...cpuHits.keys()]) if (now - cpuHits.get(k) > 6000) cpuHits.delete(k);
+    g.font = `600 ${P * 0.7}px ui-monospace, Menlo, monospace`;
+    for (const row of dieRows) {
+      const v = c ? fc.readReg(row.reg) : null;
+      g.fillStyle = "#8b949e"; g.textAlign = "right"; g.fillText(row.reg.name.replace(/^(XMM\d)\./, "$1:").replace(/^ST(\d)\./, "ST$1:"), row.x * P - 3, (row.y + 0.5) * P);
+      g.textAlign = "center";
+      for (let k = 0; k < row.reg.bits; k++) {
+        const bit = row.reg.bits - 1 - k, on = v !== null && ((v >>> bit) & 1), x = (row.x + k) * P, y = row.y * P;
+        const hit = cpuHits.has(row.reg.name + ":" + bit);
+        g.fillStyle = v === null ? "#0d1014" : on ? (row.block.regs.length > 10 ? "#2f6fb0" : "#d29922") : "#1d232c";
+        if (hit) g.fillStyle = "#f85149";
+        g.fillRect(x + 1, y + 1, P - 2, P - 2);
+        if (k % 8 === 0 && k) { g.fillStyle = "#0a0c10"; g.fillRect(x - 1, y, 2, P); }
+        g.fillStyle = hit ? "#fff" : on ? "#0d1117" : "#56606c"; if (v !== null) g.fillText(on ? "1" : "0", x + P / 2, y + P / 2 + 1);
+      }
+    }
+    cpu.userData.tex.needsUpdate = true; dirty = true;
+  }
+  drawDie();
 
   // ---- base textures: one pixel per page (two tall), coloured by owner ----
   function drawBase(s) {
@@ -383,6 +455,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (!hit && xray < 0.5) { const h = ray.intersectObjects(hullMeshes, false)[0]; if (h) return { kind: "hull", point: h.point }; }
     if (!hit) return null;
     const m = hit.object, kind = m.userData.kind, s = m.userData.surface;
+    if (m === cpu && hit.face && hit.face.normal.y > 0.5) { const X = hit.uv.x * DIE, Y = (1 - hit.uv.y) * DIE; return { kind, die: true, point: hit.point, ...dieAt(X, Y), X, Y }; }
     if (!s || !hit.face || hit.face.normal.y < 0.5) return { kind, point: hit.point };
     const X = hit.uv.x * s.TX, Y = (1 - hit.uv.y) * s.TY;
     return { kind, s, X, Y, point: hit.point, ...s.at(X, Y) };
@@ -398,7 +471,12 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       const val = v ? ` · byte 0x${hex2(v[0])}, bit ${p.bit} = ${hidden ? `${((v[0] >> p.bit) & 1) ^ 1} in the cell, ECC reads it as ${(v[0] >> p.bit) & 1}` : (v[0] >> p.bit) & 1}` : "";
       return `${ram_ ? "RAM" : "SD card"} ${hexAddr(p.addr)}${val} · ${w.label}${ram_ && w.va != null ? ` · va 0x${w.va.toString(16)}` : ""}`;
     }
-    if (p.kind === "cpu") return "CPU: registers and caches are not modelled, hits here have no effect";
+    if (p.die) {
+      if (p.reg) { const v = fc.readReg(p.reg), w = p.reg.bits / 4; return v === null ? `CPU ${p.reg.name} bit ${p.bit} · no power` : `CPU ${p.reg.name} bit ${p.bit} = ${(v >>> p.bit) & 1} · ${p.reg.name} = 0x${v.toString(16).padStart(w, "0")} · no ECC on registers`; }
+      if (p.area) return `CPU ${p.area}: not modelled (the emulator has no ${p.area === "L1 cache" ? "cache" : "gate-level logic"}), hits here have no effect`;
+      return "CPU die";
+    }
+    if (p.kind === "cpu") return "CPU package";
     if (p.kind === "fram") return `FRAM boot record: boot #${fc.fram.boots}, failed boots in a row ${fc.fram.failedStreak}, last reset: ${fc.fram.lastReset}. Ferroelectric cells: immune to bit flips`;
     if (p.kind === "wdt") return "Watchdog chip: radiation-hardened in this model, hits have no effect";
     if (p.kind === "hull") return "CubeSat hull · zoom in through it to aim at the memory";
@@ -447,6 +525,23 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (!quiet && onStrike) onStrike({ surface: s.kind, addr, bit, kind, angle: angleOf(dir), cells, result });
     return result;
   }
+  // a particle through the CPU die: the same track model, in register-cell units
+  function cpuStrike(X, Y, kind = particle(), dir = DOWN, { quiet = false } = {}) {
+    const tracks = [];
+    if (kind === "flare") { for (let i = 0; i < 48; i++) tracks.push({ X: X + (Math.random() * 2 - 1) * 4, Y: Y + (Math.random() * 2 - 1) * 4, dir: randomDirection(), let: PARTICLES[randomParticle(Math.random, FLARE_SPECTRUM)].let }); }
+    else tracks.push({ X, Y, dir, let: PARTICLES[kind] ? PARTICLES[kind].let : 0 });
+    const cells = [], now = performance.now(); let unmodelled = 0;
+    for (const t of tracks) for (const c of (kind === "bit" ? [{ X: Math.floor(t.X), Y: Math.floor(t.Y) }] : track(t.X, t.Y, t.dir, t.let))) {
+      const a = dieAt(c.X, c.Y); if (!a) continue;
+      if (a.reg) { cells.push({ reg: a.reg, bit: a.bit }); cpuHits.set(a.reg.name + ":" + a.bit, now); } else if (a.area) unmodelled++;
+    }
+    const result = cells.length ? fc.hitCpu(cells, { quiet }) : null;
+    const res = result || (fc.cpuState() ? { none: true, unmodelled } : null);
+    if (!quiet || (dist() > 0.05 && beams.length < 30)) showBeam(cpu.localToWorld(new THREE.Vector3(-0.9 + X / DIE * 1.8, 0.15, -0.9 + Y / DIE * 1.8)), toWorldDir(kind === "flare" ? DOWN : dir), quiet ? 3 : 0);
+    drawDie();
+    if (!quiet && onStrike) onStrike({ surface: "cpu", kind, angle: angleOf(dir), cells: cells.length, result: res, at: dieAt(X, Y) });
+    return res;
+  }
   const redrawSoon = () => { overlay.prev = overlay.prev && { ...overlay.prev }; overlayDue = true; };
   // background radiation: a particle at a random point of the board, from a random direction
   const surfaceAt = (x, z) => {
@@ -471,6 +566,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6 && performance.now() - down.t < 600) {
       const p = pickAt(e.clientX, e.clientY), dir = beamDir();
       if (p && p.s && p.page < p.s.pages) strike(p.s, p.X, p.Y, particle(), toLocalDir(dir));
+      else if (p && p.die) cpuStrike(p.X, p.Y, particle(), toLocalDir(dir));
       else if (p) { if (p.point) showBeam(p.point, dir); onStrike && onStrike({ surface: p.kind, info: describe(p) }); }
     }
     down = null;
@@ -486,6 +582,9 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   let xray = 0, tumble = 0, last = performance.now(), sliding = false, stage = "", mapMode = null;
   // the zoom slider is the camera distance on a log scale
   const MIN_D = controls.minDistance;
+  // closest view of the CPU die: about 14 register cells across the screen height
+  const CPU_MIN_D = 14 * 1.8 / DIE * S / (2 * Math.tan(20 * Math.PI / 180));
+  let lastDie = 0;
   const toSlider = (d) => Math.log(MAX_D / d) / Math.log(MAX_D / MIN_D), fromSlider = (v) => MAX_D * Math.pow(MIN_D / MAX_D, v);
   // where each stage starts, for the slider's tick marks
   const pageW = ram.w / ram.cols * S, H0 = () => renderer.domElement.clientHeight || 800, tanH = () => Math.tan(camera.fov * Math.PI / 360);
@@ -507,7 +606,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   function magnet(d) {
     if (flight || d > 1.0 || d < 0.03) return;
     ndc.set(0, 0); ray.setFromCamera(ndc, camera);
-    const under = ray.intersectObjects([ram.mesh, sd.mesh], false)[0];
+    const under = ray.intersectObjects([ram.mesh, sd.mesh, cpu], false)[0];
     if (under && under.face && under.face.normal.y > 0.5) {
       // settle the pivot onto the chip surface along the line of sight: the picture does not move,
       // but turning, panning and zooming now happen about the memory you are looking at
@@ -515,7 +614,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       return;
     }
     let s = null, bestD = Infinity;
-    for (const x of [ram, sd]) { const dd = ray.ray.distanceSqToPoint(x.mesh.localToWorld(new THREE.Vector3(0, x.h / 2, 0))); if (dd < bestD) { bestD = dd; s = x; } }
+    for (const x of [ram, sd, cpuS]) { const dd = ray.ray.distanceSqToPoint(x.mesh.localToWorld(new THREE.Vector3(0, x.h / 2, 0))); if (dd < bestD) { bestD = dd; s = x; } }
     const l = s.mesh.worldToLocal(controls.target.clone()), m = 0.47;
     const inX = Math.abs(l.x) <= s.w / 2 && Math.abs(l.z) <= s.d / 2;
     // far off the chip: go for its middle; just off an edge: step back over the edge
@@ -561,8 +660,14 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     if (Math.abs(xr - xray) > 1e-3) { xray = xr; for (const mat of hullMats) { mat.opacity = mat.userData.base * (1 - xray * 0.92); mat.depthWrite = mat.userData.depth && xray < 0.5; } edges.material.opacity = 0.25 + xray * 0.45; dirty = true; }
     camera.near = Math.max(1e-6, d * 0.01); camera.updateProjectionMatrix();
     if (zoomInput && !sliding) { zoomInput.value = Math.round(Math.max(0, Math.min(1, toSlider(d))) * 1000); zoomInput.style.setProperty("--z", zoomInput.value / 10 + "%"); }
-    const st = overlay.level === "text" || overlay.level === "bits" ? 4 : overlay.level === "bytes" ? 3 : d > 2.2 ? 0 : d > 0.6 ? 1 : 2;
-    if (STAGES[st].name !== stage) { stage = STAGES[st].name; if (ticks) ticks.forEach((t, i) => t.classList.toggle("on", i === st)); if (zoomInput) zoomInput.setAttribute("aria-valuetext", stage); if (stageEl) stageEl.textContent = stage; }
+    // over the CPU die: it has no finer level than its register cells, so stop zooming there
+    ndc.set(0, 0); ray.setFromCamera(ndc, camera);
+    const c0 = d < 0.6 ? ray.intersectObjects([ram.mesh, sd.mesh, cpu], false)[0] : null, onCpu = !!(c0 && c0.object === cpu);
+    controls.minDistance = onCpu ? CPU_MIN_D : MIN_D;
+    if (onCpu && now - lastDie > 250) { lastDie = now; drawDie(); }
+    const st = onCpu ? -1 : overlay.level === "text" || overlay.level === "bits" ? 4 : overlay.level === "bytes" ? 3 : d > 2.2 ? 0 : d > 0.6 ? 1 : 2;
+    const stName = st < 0 ? "CPU" : STAGES[st].name;
+    if (stName !== stage) { stage = stName; if (ticks) ticks.forEach((t, i) => t.classList.toggle("on", i === st)); if (zoomInput) zoomInput.setAttribute("aria-valuetext", stage); if (stageEl) stageEl.textContent = stage; }
     for (let i = beams.length - 1; i >= 0; i--) {
       const b = beams[i], a = 1 - (now - b.t0) / 700;
       if (a <= 0) { scene.remove(b.line, b.glow); b.line.geometry.dispose(); b.glow.geometry.dispose(); beams.splice(i, 1); continue; }
@@ -590,6 +695,13 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     // for tests: fire at an address (RAM or SD) and bit; dir in chip axes, default straight down
     strikeAt(kind, addr, bit = 0, particleKind = "bit", dir = DOWN) { const s = kind === "sd" ? sd : ram, { X, Y } = s.xy(addr, bit); return strike(s, X, Y, particleKind, dir); },
     randomStrike,
+    // fly to the CPU die, close enough to read the integer registers
+    flyToCpu(dist = 0.09) { fly(cpu.localToWorld(new THREE.Vector3(-0.35, 0.15, -0.55)), dist, new THREE.Vector3(0, 0.97, 0.24)); moved = true; },
+    // background particle on the CPU die: a random point of the die, from a random direction
+    randomCpuStrike(kind, dir) { return cpuStrike(Math.random() * DIE, Math.random() * DIE, kind, dir, { quiet: true }); },
+    // for tests: fire at one register bit
+    strikeCpu(name, bit = 0, particleKind = "bit", dir = DOWN) { const r = dieRows.find((q) => q.reg.name === name); return cpuStrike(r.x + (r.reg.bits - 1 - bit) + 0.5, r.y + 0.5, particleKind, dir); },
+    dieRegShare: DIE_REG_SHARE,
     // the share of the board's area that is RAM (background particles land uniformly on the board)
     ramShare: (ram.w * ram.d) / (9 * 6.6),
     onMap: () => drawBase(ram), onSd: refreshSd, redraw,

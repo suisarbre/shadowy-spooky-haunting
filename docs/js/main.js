@@ -9,9 +9,9 @@ const STATE_TEXT = {
   booting: () => `booting (boot #${fc.fram.boots})…`, bootloop: () => `BOOT LOOP (${fc.fram.failedStreak} failed boots in a row)`,
   starting: () => "starting flight software…", operational: () => "OPERATIONAL", lost: () => "telemetry lost, checking…",
   crashed: () => "flight software crashed", hung: () => "silent but alive (hung)", exited: (d) => `flight software exited (code ${d})`,
-  badimage: () => "flight software cannot start (damaged file)", panic: () => "kernel panic",
+  badimage: () => "flight software cannot start (damaged file)", panic: () => "kernel panic", lockup: () => "CPU locked up",
 };
-const STATE_CLASS = { operational: "ok", booting: "", starting: "", lost: "warn", hung: "bad", crashed: "bad", exited: "bad", badimage: "bad", panic: "bad", bootloop: "bad" };
+const STATE_CLASS = { operational: "ok", booting: "", starting: "", lost: "warn", hung: "bad", crashed: "bad", exited: "bad", badimage: "bad", panic: "bad", lockup: "bad", bootloop: "bad" };
 const desired = { ecc: false, watchdog: true, tmr: true, particle: "heavy" };
 let fc, board, bg;
 
@@ -51,16 +51,17 @@ function renderStatus() {
 // how the computer is holding up under background radiation
 // the mission board, top right
 function renderBoard() {
-  const s = bg.s, up = s.missionS ? 100 * s.upS / s.missionS : null, nRes = Object.values(s.resets).reduce((a, n) => a + n, 0);
+  const s = bg.s, up = s.missionS ? 100 * s.upS / s.missionS : null;
   $("m-t").textContent = s.started ? `T+ ${formatMission(s.missionS)}` : "T− launch";
   const u = $("m-up"); u.textContent = up === null ? "–" : (up >= 99.9 && up < 100 ? up.toFixed(up >= 99.995 ? 4 : 3) : up.toFixed(1)) + "%"; u.className = up === null ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad";
   $("m-down").textContent = formatShort(s.downS); $("m-down").className = s.downS > 0 ? "warn" : "";
   $("m-out").textContent = s.outages; $("m-out").className = s.outages ? "bad" : "";
-  $("m-res").textContent = nRes;
   $("m-bits").textContent = s.bits.toLocaleString("en-US");
+  $("m-cpu").textContent = s.cpuBits.toLocaleString("en-US");
   $("m-ecc").textContent = ((s.out.corrected || 0)).toLocaleString("en-US");
   // what this environment means in orbit: expected RAM upsets per day, or days per upset
-  const perDay = bg.upsetsPerDay, every = perDay >= 1 ? `≈${perDay.toPrecision(2)} RAM upsets per day` : `≈1 RAM upset every ${(1 / perDay).toPrecision(2)} days`;
+  const rate = (n, what) => n >= 1 ? `≈${n.toPrecision(2)} ${what} upsets per day` : `≈1 ${what} upset every ${(1 / n).toPrecision(2)} days`;
+  const every = `${rate(bg.upsetsPerDay, "RAM")}, ${rate(bg.cpuUpsetsPerDay, "CPU")}`;
   $("m-note").textContent = !bg.on ? "clock runs at 1× · background radiation off" : !fc.operational ? "flight software down: clock at 1× until it is back" : `${every} in orbit · ${WARPS.find((w) => w.s === bg.warp)?.label || ""}${bg.capped ? " · rate capped: the page cannot keep up" : ""} · warp pauses during outages`;
 }
 function renderSurvival() {
@@ -69,8 +70,9 @@ function renderSurvival() {
   $("survival").innerHTML = `
     <div><span class="k">Mission time</span><b>${formatMission(s.missionS)}</b></div>
     <div><span class="k">Flight software up</span><b class="${!s.missionS ? "" : up >= 99 ? "ok" : up >= 90 ? "warn" : "bad"}">${s.missionS ? up.toFixed(3) + "%" : "–"}</b></div>
-    <div><span class="k">Particles</span>${s.strikes} (${s.ram} on RAM, ${s.sd} on the SD card)</div>
+    <div><span class="k">Particles</span>${s.strikes} (${s.ram} on RAM, ${s.sd} on the SD card, ${s.cpu} on the CPU)</div>
     <div><span class="k">RAM bits upset</span>${s.bits}</div>
+    <div><span class="k">CPU register bits upset</span>${s.cpuBits} (${s.cpu} particles on the die; nothing corrects these)</div>
     <div><span class="k">ECC</span>${o.corrected || 0} corrected · ${(o["machine-check"] || 0) + (o["detected-unused"] || 0)} detected · ${o.silent || 0} silently wrong</div>
     <div><span class="k">TMR repairs</span>${s.tmrRepairs} · wrong answers ${s.wrong}</div>
     <div><span class="k">Crashes</span>${s.crashes}</div>
@@ -103,7 +105,8 @@ async function start() {
       else if (!r) text = "No power: the computer is starting up, try again in a moment.";
       else {
         const who = s.kind === "flare" ? "Solar flare burst" : s.kind === "bit" ? "Single bit" : `${PARTICLES[s.kind].label[0].toUpperCase() + PARTICLES[s.kind].label.slice(1)} at ${s.angle}° from vertical`;
-        if (r.none) text = `${who}: passed through without flipping anything (too little charge per cell; try a heavier ion or a steeper angle)`;
+        if (s.surface === "cpu") text = r.none ? `${who} · CPU ${s.at && s.at.area ? s.at.area + " (not modelled)" : "die"}: nothing flipped in the registers` : `${who} · CPU: ${r.bits} register bit${r.bits > 1 ? "s" : ""} flipped · ${r.text} · no ECC on registers: whatever reads it next gets the wrong value`;
+        else if (r.none) text = `${who}: passed through without flipping anything (too little charge per cell; try a heavier ion or a steeper angle)`;
         else if (s.surface === "sd") text = `${who} · SD card byte ${r.index} · ${r.what.label}: ${r.bits} bit(s) damaged, nothing happens until the next boot reads it`;
         else text = `${who} · RAM ${hexAddr(r.pa)} · ${r.what.label}: ${r.text}`;
       }
