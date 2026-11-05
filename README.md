@@ -1,6 +1,6 @@
 # Radiation vs. a CubeSat flight computer
 
-NASA's core Flight System (cFS) running unmodified on Linux inside an emulated CubeSat on-board computer, in the browser, with [v86](https://github.com/copy/v86). You fire particles at the chips of a 3D board and zoom in until you can see and flip single bits. Six guided missions walk through what each protection does and where it stops working. Everything is static files, served from GitHub Pages.
+NASA's core Flight System (cFS) running unmodified on Linux inside an emulated CubeSat on-board computer, in the browser, with [v86](https://github.com/copy/v86). You fire particles at the chips of a 3D board and zoom in until you can see and flip single bits. A mission board keeps score: uptime, outages and upsets, under a time-warped background of radiation. Everything is static files, served from GitHub Pages.
 
 ## Run it
 
@@ -20,14 +20,6 @@ The flight computer boots into cFS in about 14 s. No special server headers are 
 - **Background radiation**: particles from random directions at a chosen environment's rate, time-warped, with a survival dashboard (uptime, upsets, ECC outcomes, TMR repairs, crashes, resets).
 - **One way to inject faults: hit the hardware.** RAM hits flip bits in the emulated PC's physical memory, and SD card hits damage the boot storage.
 - **Semantic zoom** on the memory chips, from the whole board down to single bits (below).
-- **Missions**, each with a setup button and goals that tick themselves off:
-  1. Break it (no protection)
-  2. Let the watchdog recover it
-  3. ECC: one bit is free
-  4. Where ECC gives up
-  5. Software TMR: repair without a reboot
-  6. Damage that waits on the SD card
-  7. Survive in orbit (background radiation)
 
 ## Hardware profile: ISISPACE iOBC
 
@@ -48,7 +40,7 @@ The page opens on the satellite floating above Earth's limb, turning slowly. Dra
 - **Limits**: the deepest zoom shows about 24 rows of bits. Deep in, the magnet lets go so you can roam over the memory.
 - **Clicking fires a particle** through the point you aim at. It arrives from the upper left of your view, so its track is visible and the angle it meets the chip at depends on how you hold the satellite.
 - **Map-style controls inside**: once inside the satellite, drag moves across the board (in the board's plane, so the view stays on the chip). Two fingers, or the right mouse button, zoom and tilt. Outside, drag turns the satellite. The magnet only acts after you let go.
-- **The panels** float over the scene: protection and particles, missions, status, event log. On a phone they start folded.
+- **The panels** float over the scene: protection and particles, the mission board, status, event log. On a phone they start folded.
 
 ## Semantic zoom: from the board to single bits
 
@@ -96,7 +88,7 @@ The scrubber passes every 20 s. A word software rewrites loses its old error, an
 
 Cells flipped, by angle from vertical. A steep particle flips one cell. A low-angle heavy ion flips a line of cells (about depth × tan(angle)), but leaves less charge in each, so light ions flip nothing at low angles.
 
-**The direction matters as much as the angle.** One row of the chip is 16 bytes, which is two ECC words. A line of upsets **along a row** stays inside one word: ECC detects it but cannot fix it, and in used memory that means a machine check and a reset. The same particle **across rows** puts one bit in each of several words, and ECC corrects them all. This is why real memory interleaves its cells, and mission 4 lets you see it by turning the board.
+**The direction matters as much as the angle.** One row of the chip is 16 bytes, which is two ECC words. A line of upsets **along a row** stays inside one word: ECC detects it but cannot fix it, and in used memory that means a machine check and a reset. The same particle **across rows** puts one bit in each of several words, and ECC corrects them all. This is why real memory interleaves its cells, and turning the board shows it.
 
 ## Mission board
 
@@ -172,7 +164,6 @@ The emulated hardware (`docs/js/hardware.js`) knows nothing about Linux or cFS. 
 | `docs/js/ecc.js` | SECDED (72,64) decoder |
 | `docs/js/board3d.js` | 3D board, semantic zoom, picking, strikes along the line of sight |
 | `docs/js/radiation.js` | particle track model, random directions and spectrum, background radiation and its statistics |
-| `docs/js/missions.js` | the six missions |
 | `docs/js/os/linux-cfs.js` | OS adapter for Linux + cFS |
 | `docs/bzImage`, `initrd.gz` | Linux 6.8 (i386) and the root filesystem: busybox, 32-bit glibc, cFS with 13 apps + 2 libs |
 | `docs/libv86.js`, `v86.wasm`, `bios.bin`, `vgabios.bin` | v86 0.5.470 and SeaBIOS |
@@ -208,7 +199,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 | `test/test-watchdog.mjs` | Node + v86 | 9/9 |
 | `test/test-tmr.mjs` | Node + v86 | 12/12 |
 | `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
-| `test/browser-lab.mjs` | Chrome | 29/29 (below) |
+| `test/browser-lab.mjs` | Chrome | 28/28 (below) |
 | `test/test-ecc.mjs` | Node | 66/66: every 1-, 2- and 3-bit error |
 
 `browser-lab.mjs` checks the following:
@@ -220,7 +211,6 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 - The watchdog recovers a killed flight software.
 - The particle shower lands its bits.
 - An SD hit leads to a boot loop, and restoring the card recovers it.
-- Missions 2 and 6 tick their goals off by themselves.
 
 Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome node test/browser-lab.mjs`.
 

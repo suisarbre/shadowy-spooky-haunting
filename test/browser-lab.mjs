@@ -15,7 +15,6 @@ const ev = (fn, arg) => p.evaluate(fn, arg);
 
 await p.goto(`http://127.0.0.1:${PORT}/`);
 result("boots to OPERATIONAL with a memory map and calculator telemetry", await up(), await ev(() => sim.fc.state));
-await ev(() => { localStorage.clear(); sim.missions.select("break"); });
 
 // ---- semantic zoom ----
 await ev(() => sim.zoomToCopy(2)); await sleep(3200);
@@ -100,23 +99,19 @@ if (!(await ev(() => sim.fc.operational))) await up();
 r = await ev(() => { sim.applySetup({ bg: true, env: "quiet", warp: 604800 }); const upWarp = sim.bg.warpNow; const was = sim.fc.operational; sim.fc.operational = false; const downWarp = sim.bg.warpNow; sim.fc.operational = was; sim.applySetup({ bg: false }); return { upWarp, downWarp }; });
 result("time warp runs only while the flight software is up", r.upWarp === 604800 && r.downWarp === 1, JSON.stringify(r));
 
-// ---- watchdog (mission 2 ticks itself off) ----
-await ev(() => { sim.missions.select("watchdog"); sim.applySetup({ watchdog: true }); });
+// ---- watchdog ----
+await ev(() => sim.applySetup({ watchdog: true }));
 await ev(() => sim.fc.sh("kill -9 $(pidof core-cpu1)"));
 const wd = await until(() => sim.fc.fram.lastReset === "watchdog", null, 40000);
 result("flight software killed: the watchdog resets the computer", wd, await ev(() => sim.fc.fram.lastReset));
 result("...and it comes back", await up());
-await sleep(500);
-r = await ev(() => sim.missions.done().watchdog);
-result("mission 2 goals ticked off by themselves", r && r.every(Boolean), JSON.stringify(r));
 
 // ---- particle shower ----
 r = await ev(() => { const run = sim.fc.map.runs.find((x) => x.label === "heap") || sim.fc.map.runs.find((x) => x.cat === "fsw"); const h = sim.board.strikeAt("ram", run.pfn * 4096 + 8, 0, "flare"); return h && { bits: h.bits, words: h.words, outcomes: h.outcomes }; });
 result("flare burst flips many bits at once", r && r.bits >= 10, JSON.stringify(r));
 await ev(() => sim.fc.powerCycle("ground command")); await up();
 
-// ---- SD card: latent damage, boot loop, restore (mission 6) ----
-await ev(() => sim.missions.select("sd"));
+// ---- SD card: latent damage, boot loop, restore ----
 const exe = await ev(() => { const f = sim.fc.images.files.find((x) => x.name === "cfs/cpu1/core-cpu1"); return sim.fc.images.kernel.length + f.dataOff; });
 await ev((i) => sim.board.strikeAt("sd", i, 0), exe);
 r = await ev(() => ({ state: sim.fc.state, bits: sim.fc.sdDamagedBits() }));
@@ -126,9 +121,6 @@ result("power cycle: flight software cannot start", await until(() => sim.fc.sta
 result("boot loop: FRAM counts failed boots", await until(() => sim.fc.fram.failedStreak >= 2, null, 150000), JSON.stringify(await ev(() => sim.fc.fram)));
 await ev(() => sim.fc.restoreSd());
 result("restore SD card: the next reset boots clean", await up(), JSON.stringify(await ev(() => sim.fc.fram)));
-await sleep(500);
-r = await ev(() => sim.missions.done().sd);
-result("mission 6 goals ticked off by themselves", r && r.every(Boolean), JSON.stringify(r));
 
 await ev(() => sim.board.home()); await sleep(1500);
 await p.screenshot({ path: "test-board.png" });

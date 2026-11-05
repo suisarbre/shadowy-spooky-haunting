@@ -35,10 +35,9 @@
 
   #controls { left:max(16px, env(safe-area-inset-left, 0px)); top:calc(16px + env(safe-area-inset-top, 0px)); width:330px; }
   #status-panel { left:max(16px, env(safe-area-inset-left, 0px)); bottom:calc(96px + env(safe-area-inset-bottom, 0px)); width:330px; max-height:42vh; }
-  /* right column: the mission board, then the missions drawer under it */
+  /* right column: the mission board */
   .rightcol { position:fixed; z-index:2; right:max(16px, env(safe-area-inset-right, 0px)); top:calc(16px + env(safe-area-inset-top, 0px)); width:340px; bottom:calc(150px + env(safe-area-inset-bottom, 0px)); display:flex; flex-direction:column; gap:10px; pointer-events:none; }
   .rightcol > * { pointer-events:auto; }
-  .rightcol #missions-panel { position:static; max-height:none; min-height:0; flex:0 1 auto; }
   .mboard { flex:none; padding:12px 14px; background:var(--glass); border:1px solid var(--line); border-radius:14px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); font-variant-numeric:tabular-nums; }
   .mrow { display:flex; justify-content:space-between; align-items:center; }
   .mrow button { padding:3px 10px; font-size:12px; }
@@ -88,26 +87,6 @@
   .survival { grid-template-columns:repeat(2, minmax(0,1fr)); }
   .legend { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim); }
   .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
-
-  /* missions */
-  #missions h2 { display:none; }
-  #missions > p { margin:0 0 6px; font-size:12px; color:var(--dim); }
-  .mission { border-top:1px solid var(--line); }
-  .mhead { width:100%; display:flex; justify-content:space-between; gap:8px; background:none; border:0; border-radius:0; padding:9px 0; text-align:left; font-weight:600; }
-  .mstate { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
-  .mission.complete .mstate { color:var(--ok); }
-  .mbody { padding:0 0 12px; font-size:13px; }
-  .mbody p { margin:0 0 8px; }
-  .mbody .setup { width:100%; text-align:left; margin-bottom:8px; border-color:var(--acc); }
-  .mbody .row { margin-bottom:8px; color:var(--dim); }
-  .goals { list-style:none; margin:0 0 8px; padding:0; }
-  .goals li { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
-  .goals .box { flex:none; width:16px; height:16px; border:1.5px solid var(--dim); border-radius:4px; font-size:11px; line-height:13px; text-align:center; margin-top:2px; }
-  .goals li.met { color:var(--dim); } .goals li.met .box { background:var(--ok); border-color:var(--ok); color:#03040a; }
-  .goals li.opt { font-style:italic; }
-  details.hint summary, details.why summary { cursor:pointer; color:var(--acc); font-size:12px; padding:2px 0; }
-  details.hint p, details.why p { margin:4px 0 6px; }
-  .reset-progress { margin-top:8px; font-size:12px; color:var(--dim); }
 
   pre { margin:0; max-height:28vh; overflow:auto; font:11px/1.5 var(--mono); white-space:pre-wrap; word-break:break-word; color:var(--dim); }
   #log-panel details summary { cursor:pointer; color:var(--acc); font-size:12px; }
@@ -186,10 +165,6 @@
   </div>
   <div class="mnote" id="m-note">clock runs at 1×</div>
 </section>
-<details class="panel" id="missions-panel" open>
-  <summary>Missions</summary>
-  <div class="body" id="missions"></div>
-</details>
 </div>
 
 <details class="panel" id="log-panel">
@@ -216,11 +191,11 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110511";
+window.BUILD = "2026110512";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {
-  const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "missions", "radiation", "os/linux-cfs"];
+  const v = "?v=" + window.BUILD, mods = ["util", "ecc", "hardware", "board3d", "radiation", "os/linux-cfs"];
   const map = { imports: { three: "./vendor/three.module.min.js" + v } };
   map.imports[new URL("vendor/OrbitControls.js", location.href).href] = "./vendor/OrbitControls.js" + v;
   for (const m of mods) map.imports[new URL(`js/${m}.js`, location.href).href] = `./js/${m}.js${v}`;

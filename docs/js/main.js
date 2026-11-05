@@ -1,8 +1,7 @@
-// Wires the page together: one flight computer, its 3D board, the missions.
+// Wires the page together: one flight computer, its 3D board in orbit, the panels.
 import { $, bus, hexAddr, loadImages } from "./util.js";
 import { FlightComputer, SCRUB_MS, BOOT_WINDOW_MS } from "./hardware.js";
 import { createBoard } from "./board3d.js";
-import { createMissions } from "./missions.js";
 import { Background, ENVIRONMENTS, WARPS, PARTICLES, formatMission, formatShort } from "./radiation.js";
 import os, { commands, calcExpected, calcOk } from "./os/linux-cfs.js";   // swap the adapter to try another OS
 
@@ -14,7 +13,7 @@ const STATE_TEXT = {
 };
 const STATE_CLASS = { operational: "ok", booting: "", starting: "", lost: "warn", hung: "bad", crashed: "bad", exited: "bad", badimage: "bad", panic: "bad", bootloop: "bad" };
 const desired = { ecc: false, watchdog: true, tmr: true, particle: "heavy" };
-let fc, board, missions, bg;
+let fc, board, bg;
 
 function setToggle(id, on, label) { const b = $(id); b.setAttribute("aria-pressed", String(on)); b.querySelector("b").textContent = on ? "ON" : "OFF"; }
 function applySetup(s) {
@@ -117,7 +116,6 @@ async function start() {
   bg = new Background({ fc, board });
   $("bg-env").innerHTML = Object.entries(ENVIRONMENTS).map(([k, e]) => `<option value="${k}">${e.label}</option>`).join("");
   $("bg-warp").innerHTML = WARPS.map((w) => `<option value="${w.s}">${w.label}</option>`).join("");
-  missions = createMissions({ el: $("missions"), fc, apply: applySetup, zoomToCopy });
   bus.on("map", () => board.onMap());
   bus.on("sd-hit", () => board.onSd()); bus.on("sd-restore", () => board.onSd());
   bus.on("reset", () => board.onMap());
@@ -130,7 +128,7 @@ async function start() {
   setInterval(() => { if (board.level !== lastLevel) { lastLevel = board.level; bus.emit("zoom", { fc, level: lastLevel }); } $("where").textContent = board.hover || (board.level !== "none" ? board.center() : ""); renderBoard(); }, 300);
   setInterval(() => { if (fc.operational) fc.requestMap(); }, 15000);   // memory layout drifts as software runs
   renderControls(); renderStatus(); renderLog();
-  window.sim = { fc, board, missions, applySetup, desired, calcOk, zoomToCopy, os, commands, bg };
+  window.sim = { fc, board, applySetup, desired, calcOk, zoomToCopy, os, commands, bg };
 }
 
 // ---- controls ----

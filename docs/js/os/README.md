@@ -30,7 +30,7 @@ To try another OS (RTEMS, FreeRTOS's IA-32 port, Zephyr x86…), do two things:
 | `patterns` | regexes over the console: `fswStarting`, `shellReady`, `operational`, `fswExit`, `corruptExec`, `panic`, `probeDown`, `probeAlive` |
 | `startCommand`, `probeCommand` | console commands: start the flight software; answer whether it is still alive (`probeAlive` / `probeDown`) |
 | `onOperational(fc)` | called once the flight software is up (Linux + cFS: turn on the downlink) |
-| `telemetry(fc, bytes)` | decode one telemetry packet into `fc.app`, log events with `fc.log`, emit `tmr-repair` / `calc-wrong` for the missions |
+| `telemetry(fc, bytes)` | decode one telemetry packet into `fc.app`, log events with `fc.log`, emit `tmr-repair` / `calc-wrong` for the statistics |
 | `freshApp()` | the empty `fc.app` state after each boot |
 | `categorize(comm, label)` | memory-map run → colour key (`kernel`, `fsw`, `app`, `tmr1..3`, `lib`, `other`) |
 | `categorizeFile(name)` | SD card file → colour key |
