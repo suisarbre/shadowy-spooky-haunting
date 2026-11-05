@@ -81,7 +81,7 @@ async function start() {
   fc.setWatchdog(desired.watchdog);
   board = createBoard({
     host: $("view3d"), fc, os, particle: () => desired.particle,
-    zoomInput: $("zoom"), ticks: [...document.querySelectorAll("#ticks span")], stageEl: $("stage"),
+    zoomInput: $("zoom"), ticks: [...document.querySelectorAll("#ticks span")], stageEl: $("stage"), hintEl: $("hint"),
     onStrike(s) {
       const r = s.result;
       let text;

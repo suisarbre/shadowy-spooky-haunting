@@ -47,6 +47,7 @@ The page opens on the satellite floating above Earth's limb, turning slowly. Dra
 - **The magnet**: once inside, the view is pulled onto the nearer memory chip (RAM or SD card) and turns to look down on it. You can still tilt up to about 50° from vertical at the chip, and 30° at the bits.
 - **Limits**: the deepest zoom shows about 24 rows of bits. Deep in, the magnet lets go so you can roam over the memory.
 - **Clicking fires a particle** through the point you aim at. It arrives from the upper left of your view, so its track is visible and the angle it meets the chip at depends on how you hold the satellite.
+- **Map-style controls inside**: once inside the satellite, drag moves across the board (in the board's plane, so the view stays on the chip). Two fingers, or the right mouse button, zoom and tilt. Outside, drag turns the satellite. The magnet only acts after you let go.
 - **The panels** float over the scene: protection and particles, missions, status, event log. On a phone they start folded.
 
 ## Semantic zoom: from the board to single bits

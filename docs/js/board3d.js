@@ -46,7 +46,7 @@ class Surface {
   local(X, Y) { return new THREE.Vector3(-this.w / 2 + X / this.TX * this.w, this.h / 2, -this.d / 2 + Y / this.TY * this.d); }
 }
 
-export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks, stageEl }) {
+export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks, stageEl, hintEl }) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   host.prepend(renderer.domElement);
@@ -56,9 +56,9 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   const controls = new OrbitControls(camera, renderer.domElement);
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, zoomToCursor: true, zoomSpeed: 1.6, rotateSpeed: 0.7, screenSpacePanning: true, maxDistance: 6.5, autoRotate: !reduce, autoRotateSpeed: 0.35 });
-  let idleTimer;
-  controls.addEventListener("start", () => { controls.autoRotate = false; clearTimeout(idleTimer); });
-  controls.addEventListener("end", () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (!reduce && dist() > 2.5) controls.autoRotate = true; }, 6000); });
+  let idleTimer, touching = false;
+  controls.addEventListener("start", () => { touching = true; controls.autoRotate = false; clearTimeout(idleTimer); });
+  controls.addEventListener("end", () => { touching = false; clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (!reduce && dist() > 2.5) controls.autoRotate = true; }, 6000); });
   const sun = new THREE.DirectionalLight(0xfff2dd, 2.6); sun.position.set(6, 4, 3); scene.add(sun);
   scene.add(new THREE.HemisphereLight(0x5a7fb8, 0x0a0d14, 1.1));
 
@@ -481,7 +481,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
 
   const dist = () => camera.position.distanceTo(controls.target);
   const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-  let xray = 0, tumble = 0, last = performance.now(), sliding = false, stage = "";
+  let xray = 0, tumble = 0, last = performance.now(), sliding = false, stage = "", mapMode = null;
   // the zoom slider is the camera distance on a log scale
   const MIN_D = controls.minDistance;
   const toSlider = (d) => Math.log(MAX_D / d) / Math.log(MAX_D / MIN_D), fromSlider = (v) => MAX_D * Math.pow(MIN_D / MAX_D, v);
@@ -529,7 +529,21 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     stepFlight(now);
     let d = dist();
-    if (!sliding) { magnet(d); lookDown(d); d = dist(); }
+    // inside the satellite the controls work like a map: drag moves across the board, two fingers
+    // (or the right mouse button) tilt. Outside, drag turns the satellite. Never switch mid-gesture.
+    const inside = d < 0.6;
+    if (!touching && inside !== mapMode) {
+      mapMode = inside;
+      controls.mouseButtons = inside ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+      controls.touches = inside ? { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE } : { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      // pan across the board's plane, so the view stays on the chip surface
+      controls.screenSpacePanning = !inside;
+      if (hintEl) hintEl.textContent = inside ? (matchMedia("(pointer: coarse)").matches ? "DRAG TO MOVE · TWO FINGERS TO ZOOM AND TILT · TAP TO FIRE" : "DRAG TO MOVE · RIGHT-DRAG TO TILT · SCROLL TO ZOOM · CLICK TO FIRE") : (matchMedia("(pointer: coarse)").matches ? "DRAG TO TURN · PINCH TO ZOOM IN" : "DRAG TO TURN · SCROLL TO ZOOM IN");
+    }
+    // the magnet only acts once you let go, so it never fights your hand
+    if (!sliding && !touching) magnet(d);
+    if (!sliding) lookDown(d);
+    d = dist();
     // the satellite drifts gently while you look at it from outside
     if (d > 2.5 && !reduce && !flight) { tumble += dt; sat.rotation.x = Math.sin(tumble * 0.13) * 0.08; sat.rotation.z = Math.cos(tumble * 0.11) * 0.06; dirty = true; }
     // closer in, the hull turns to x-ray so you can see inside
