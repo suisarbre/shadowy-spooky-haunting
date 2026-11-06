@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 const PORT = process.env.PORT || 8773, CHROME = process.env.CHROME;
 const b = await chromium.launch({ ...(CHROME ? { executablePath: CHROME } : {}), args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
-const errs = []; p.on("pageerror", (e) => errs.push(String(e).slice(0, 300)));
+const errs = []; p.on("pageerror", (e) => errs.push(String(e.stack || e).slice(0, 600)));
 const t0 = Date.now(), T = () => ((Date.now() - t0) / 1000).toFixed(0).padStart(4) + "s";
 let pass = 0, fail = 0;
 const result = (name, ok, detail = "") => { ok ? pass++ : fail++; console.log(`${T()} ${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  -- " + detail : ""}`); };
@@ -128,7 +128,8 @@ result("...after the accelerated test, a restored card boots clean", await up(),
 // paging switched off under the kernel (CR0 bit 31): the CPU locks up, the watchdog resets it
 await ev(() => sim.applySetup({ watchdog: true }));
 await ev(() => sim.board.strikeCpu("CR0", 31));
-result("CPU: CR0.PG flipped: the CPU locks up", await until(() => sim.fc.state === "lockup", null, 8000), await ev(() => sim.fc.state));
+// v86 either traps (a lockup) or keeps running a kernel that can no longer reach its own memory: either way the CPU stops doing useful work
+result("CPU: CR0.PG flipped: the CPU stops doing useful work", await until(() => /^(lockup|lost|hung|crashed|panic)$/.test(sim.fc.state), null, 20000), await ev(() => sim.fc.state));
 result("...the watchdog resets it and it comes back", (await until(() => sim.fc.fram.lastReset === "watchdog", null, 40000)) && (await up()), await ev(() => sim.fc.fram.lastReset));
 
 // ---- watchdog ----
@@ -143,46 +144,61 @@ r = await ev(() => { const run = sim.fc.map.runs.find((x) => x.label === "heap")
 result("flare burst flips many bits at once", r && r.bits >= 10, JSON.stringify(r));
 await ev(() => sim.fc.powerCycle("ground command")); await up();
 
-// ---- ground uplink: a file with a chunk damaged on the way is resent and verified ----
+// ---- ground station: uplink any file to the SD card's data partition, run it, check Doom in lockstep ----
+result("the satellite mounts its SD card's data partition at /sd", await ev(() => /SD data partition mounted at \/sd/.test(sim.fc.con)));
 r = await ev(async () => {
   const bytes = new Uint8Array(300000); for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 2654435761 >>> 13) & 255;
   const fc = sim.fc, send = fc.radio.bind(fc); let spoiled = false;
   fc.radio = (t) => { if (!spoiled && t.startsWith("UD3:")) { spoiled = true; t = t.slice(0, -8) + (t.slice(-8, -7) === "A" ? "B" : "A") + t.slice(-7); } send(t); };
-  try { const u = await sim.gs.uplink("testfile", bytes); return { ok: true, resent: u.resent, onSd: sim.gs.hasPayload("testfile"), spoiled }; }
+  try { const u = await sim.gs.uplink("testfile", bytes); const same = sim.fc.sdData.get("testfile").every((v, i) => v === bytes[i]); return { ok: true, resent: u.resent, same, spoiled }; }
   catch (e) { return { ok: false, err: e.message }; } finally { fc.radio = send; }
 });
-result("uplink: a chunk damaged on the way fails its CRC, is resent, and the file is verified and stored", r.ok && r.spoiled && r.resent > 0 && r.onSd, JSON.stringify(r));
-
-// ---- payload: Doom on the satellite and the ground in lockstep (needs a WAD: DOOM_WAD=path/doom1.wad) ----
-if (process.env.DOOM_WAD) {
-  await ev(() => document.getElementById("gs-open").click());
-  await p.setInputFiles("#gs-wad", process.env.DOOM_WAD);
-  await until(() => !document.getElementById("gs-up").disabled, null, 10000);
-  await ev(() => document.getElementById("gs-up").click());
-  result("uplink: Doom and its game data go up and are stored on the SD card", await until(() => sim.gs.hasPayload("doom") && sim.gs.payloadFiles().length >= 3, null, 300000), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
-  await until(() => !document.getElementById("gs-start").disabled, null, 10000);
-  await ev(() => document.getElementById("gs-start").click());
-  // no keys: Doom plays its attract demo, which is also driven per tic
-  result("Doom: the satellite starts from the same first frame as the ground", await until(() => sim.gs.doom && sim.gs.doom.satReady !== null && sim.gs.doom.satReady === sim.gs.doom.groundHash.get(-1) || false, null, 120000), await ev(() => JSON.stringify(sim.gs.doom && { sat: sim.gs.doom.satReady, ended: sim.gs.doom.ended })));
-  result("Doom: 150 frames computed on the satellite match the ground's", await until(() => sim.gs.doom.satTic >= 150 && !sim.gs.doom.diverged, null, 120000), await ev(() => JSON.stringify({ satTic: sim.gs.doom.satTic, diverged: sim.gs.doom.diverged })));
-  await ev(() => sim.fc.requestMap()); await sleep(4000);
-  r = await ev(() => {
-    // Doom's zone memory (anonymous pages): the level, its textures and the things in it
-    const runs = sim.fc.map.runs.filter((x) => x.cat === "payload" && x.label === "anon"), pages = runs.reduce((n, x) => n + x.n, 0);
-    for (let i = 0; i < 200; i++) { let k = Math.floor(Math.random() * pages), x = runs.find((q) => (k -= q.n) < 0); sim.board.strikeAt("ram", (x.pfn + x.n + k) * 4096 + Math.floor(Math.random() * 4096), i % 8); }
-    return pages;
-  });
-  result("Doom: 200 bits flipped in its working memory on the satellite: the ground sees the frames differ", r > 0 && await until(() => !!(sim.gs.doom.diverged || sim.gs.doom.ended), null, 60000), await ev(() => JSON.stringify({ diverged: sim.gs.doom.diverged, ended: sim.gs.doom.ended })));
-  result("...the flight software is not affected: the payload is a separate process", await ev(() => sim.fc.operational));
-  await ev(() => { document.getElementById("gs-stop").click(); sim.fc.powerCycle("ground command"); });
-  result("uplinked files survive a reboot (they are on the SD card)", (await up()) && await ev(() => sim.gs.hasPayload("doom") && sim.gs.payloadFiles().length >= 3), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
-  await ev(() => document.getElementById("gs-close").click());
-} else console.log("      (Doom tests skipped: set DOOM_WAD to a Doom IWAD to run them)");
+result("uplink: a chunk damaged on the way fails its CRC, is resent, and the file arrives intact on /sd", r.ok && r.spoiled && r.resent > 0 && r.same, JSON.stringify(r));
+r = await ev(async () => { await sim.gs.remove("testfile"); return sim.gs.has("testfile"); });
+result("uplink: a file can be deleted", r === false);
+// any program: a script that prints, reads its input, and exits
+await ev(() => sim.gs.uplink("hello.sh", new TextEncoder().encode("#!/bin/sh\necho \"hello from $(hostname), $(pwd)\"\nread x\necho \"got $x\"\n")));
+await ev(() => sim.gs.start("./hello.sh"));
+result("run: an uplinked script runs on the satellite and its output comes down", await until(() => sim.gs.run.lines.some((l) => l === "hello from spacey-sat1, /sd"), null, 20000), await ev(() => JSON.stringify(sim.gs.run.lines)));
+await ev(() => sim.gs.stdin("ping"));
+result("run: a line sent up reaches its input, and it exits", await until(() => sim.gs.run.lines.includes("got ping") && /status 0/.test(sim.gs.run.exited || ""), null, 20000), await ev(() => JSON.stringify({ lines: sim.gs.run.lines, exited: sim.gs.run.exited })));
+// Doom with Freedoom: the ready-made payload
+await ev(() => { document.getElementById("gs-open").click(); document.getElementById("gs-pre-doom").click(); });
+result("uplink: Doom and Freedoom (27.5 MB) go up and are stored on /sd", await until(() => sim.gs.has("doom") && sim.gs.has("freedoom1.wad") && !document.getElementById("gs-pre-doom").disabled, null, 400000), await ev(() => JSON.stringify(sim.gs.files())));
+const runDoom = async () => { await ev(() => { document.getElementById("gs-cmd").value = "doom -iwad freedoom1.wad -mb 16"; document.getElementById("gs-run").click(); }); return until(() => !!(sim.gs.run.lock && sim.gs.run.lock.ready && sim.gs.run.lock.twin), null, 120000); };
+result("Doom: it starts on the satellite and the ground starts its own copy, from the same first frame", (await runDoom()) && await ev(() => sim.gs.run.lock.groundHash.get(-1) === sim.gs.run.lock.satReady), await ev(() => JSON.stringify(sim.gs.run.lock && { sat: sim.gs.run.lock.satReady, note: sim.gs.run.lock.twinNote, exited: sim.gs.run.exited })));
+// no keys: Doom plays its attract demo, which is also driven per tic
+result("Doom: 150 frames computed on the satellite match the ground's", await until(() => sim.gs.run.lock.satTic >= 150 && !sim.gs.run.lock.diverged, null, 120000), await ev(() => JSON.stringify({ satTic: sim.gs.run.lock.satTic, diverged: sim.gs.run.lock.diverged })));
+await ev(() => sim.fc.requestMap()); await sleep(4000);
+r = await ev(() => {
+  // Doom's zone memory (anonymous pages): the level, its textures and the things in it
+  const runs = sim.fc.map.runs.filter((x) => x.cat === "payload" && x.label === "anon"), pages = runs.reduce((n, x) => n + x.n, 0);
+  for (let i = 0; i < 200; i++) { let k = Math.floor(Math.random() * pages), x = runs.find((q) => (k -= q.n) < 0); sim.board.strikeAt("ram", (x.pfn + x.n + k) * 4096 + Math.floor(Math.random() * 4096), i % 8); }
+  return pages;
+});
+result("Doom: 200 bits flipped in its working memory on the satellite: the ground sees the frames differ", r > 0 && await until(() => !!(sim.gs.run.lock.diverged || sim.gs.run.exited), null, 60000), await ev(() => JSON.stringify({ diverged: sim.gs.run.lock.diverged, exited: sim.gs.run.exited })));
+result("...the flight software is not affected: the payload is a separate process", await ev(() => sim.fc.operational));
+// damage on the card: the monsters and items of E1M6 (the level the attract demo plays), in the game data on /sd
+await ev(() => document.getElementById("gs-stop").click()); await until(() => !!sim.gs.run.exited, null, 10000);
+r = await ev(() => {
+  const f = sim.fc.dataLayout.find((x) => x.name === "freedoom1.wad"), w = sim.fc.sdData.get("freedoom1.wad"), v = new DataView(w.buffer, w.byteOffset);
+  const n = v.getInt32(4, true), dir = v.getInt32(8, true), name = (i) => String.fromCharCode(...w.subarray(dir + 16 * i + 8, dir + 16 * i + 16)).replace(/\0.*$/, "");
+  let i = 0; while (i < n && name(i) !== "E1M6") i++;
+  const things = { off: v.getInt32(dir + 16 * (i + 1), true), size: v.getInt32(dir + 16 * (i + 1) + 4, true) };   // the lump after the marker
+  // each thing is 10 bytes: x, y, angle, type, flags. Flip a low bit of some x and y positions only, so the
+  // level still loads, with monsters and items a little out of place
+  for (let k = 0; k < 12; k++) { const t = Math.floor(Math.random() * (things.size / 10)); sim.fc.hitSd(f.off + things.off + t * 10 + (k % 2) * 2, 1 << (3 + (k % 3)), { quiet: true }); }
+  return { name: name(i + 1), size: things.size };
+});
+result("Doom: monster positions in E1M6's THINGS changed on the SD card: the next run's frames differ from the ground's", (await runDoom()) && await until(() => !!sim.gs.run.lock.diverged, null, 120000), await ev((lump) => JSON.stringify({ lump, diverged: sim.gs.run.lock && sim.gs.run.lock.diverged, exited: sim.gs.run.exited }), r));
+await ev(() => { document.getElementById("gs-stop").click(); sim.fc.powerCycle("ground command"); });
+result("the data partition survives a reboot", (await up()) && await ev(() => sim.gs.has("doom") && sim.gs.has("freedoom1.wad")), JSON.stringify(await ev(() => sim.gs.files())));
+await ev(() => document.getElementById("gs-close").click());
 
 // ---- SD card: latent damage, boot loop, restore ----
 const exe = await ev(() => { const f = sim.fc.images.files.find((x) => x.name === "cfs/cpu1/core-cpu1"); return sim.fc.images.kernel.length + f.dataOff; });
 await ev((i) => sim.board.strikeAt("sd", i, 0), exe);
-r = await ev(() => ({ state: sim.fc.state, bits: sim.fc.sdDamagedBits() }));
+r = await ev(() => ({ state: sim.fc.state, bits: sim.fc.sdDamagedBits({ boot: true }) }));
 result("SD card hit on the cFS executable: running system unaffected", r.state === "operational" && r.bits === 1, JSON.stringify(r));
 await ev(() => sim.fc.powerCycle("ground command"));
 result("power cycle: flight software cannot start", await until(() => sim.fc.state === "badimage", null, 40000), await ev(() => sim.fc.state));
@@ -191,10 +207,10 @@ await ev(() => sim.fc.restoreSd());
 result("restore SD card: the next reset boots clean", await up(), JSON.stringify(await ev(() => sim.fc.fram)));
 // the same damage, left alone: after 3 failed boots the boot loader falls back to the golden image
 const g0 = await ev(() => sim.fc.fram.goldenBoots);
-await ev((i) => { sim.applySetup({ golden: true, watchdog: true }); sim.fc.writeSdFile("payload/marker.gz", new Uint8Array(100)); sim.board.strikeAt("sd", i, 0); sim.fc.powerCycle("ground command"); }, exe);
+await ev((i) => { sim.applySetup({ golden: true, watchdog: true }); sim.board.strikeAt("sd", i, 0); sim.fc.powerCycle("ground command"); }, exe);
 result("golden image: 3 failed boots in a row, the boot loader boots the golden copy", await until((g) => sim.fc.fram.goldenBoots > g, g0, 200000), JSON.stringify(await ev(() => sim.fc.fram)));
-result("...it repairs the card and the flight software comes back without the ground", (await up()) && (await ev(() => sim.fc.sdDamagedBits() === 0)), JSON.stringify(await ev(() => ({ state: sim.fc.state, sd: sim.fc.sdDamagedBits() }))));
-result("...the golden image is the launch image: what the ground uplinked since is gone", await ev(() => sim.gs.payloadFiles().length === 0), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
+result("...it repairs the card and the flight software comes back without the ground", (await up()) && (await ev(() => sim.fc.sdDamagedBits({ boot: true }) === 0)), JSON.stringify(await ev(() => ({ state: sim.fc.state, sd: sim.fc.sdDamagedBits({ boot: true }) }))));
+result("...the golden image restores only the boot partition: the data partition is kept", await ev(() => sim.gs.has("doom") && sim.gs.has("freedoom1.wad") && sim.gs.has("hello.sh")), JSON.stringify(await ev(() => sim.gs.files())));
 
 await ev(() => sim.board.home()); await sleep(1500);
 await p.screenshot({ path: "test-board.png" });

@@ -4,7 +4,7 @@
 //
 // Nothing here knows about Linux or cFS: the OS adapter (os/*.js) supplies the
 // boot images, the console patterns and the telemetry decoding.
-import { bus, hex2, hexAddr, popcount, parseCpio, cpioArchive } from "./util.js";
+import { bus, hex2, hexAddr, popcount } from "./util.js";
 import { WORD, decode, bitsSet } from "./ecc.js";
 
 export const BOOT_WINDOW_MS = 30000;   // after power-on the flight software must check in with the watchdog within this
@@ -12,7 +12,7 @@ export const SILENCE_MS = 6000;        // telemetry gap that makes the ground as
 export const SCRUB_MS = 20000;
 export const GOLDEN_AFTER = 3;         // failed boots in a row (counted in FRAM) before the boot loader falls back to the golden image         // the ECC scrubber reads every word of RAM once per this period
 export const RAM_MB = 64;              // iOBC SDRAM
-export const SD_SPARE = 4 * 1048576;   // room on the boot storage for files the ground uplinks
+export const SD_DATA_MB = 40;          // the SD card's data partition, for files the ground uplinks
 
 // The CPU's architectural state that a particle can upset, as v86 keeps it (32-bit x86).
 // Each entry is one row of cells on the CPU die: { name, bits, get(cpu), set(cpu, v) }.
@@ -34,11 +34,17 @@ export class FlightComputer {
     this.os = os; this.images = images; this.screenEl = screen;
     // v86 always loads the root filesystem image at the 64 MB mark, so the PC gets
     // just enough extra RAM to hold it (the kernel frees that area after unpacking).
-    this.memMb = RAM_MB + Math.ceil((images.fs.length + SD_SPARE) / 1048576) + 1;
+    this.memMb = RAM_MB + Math.ceil(images.fs.length / 1048576) + 1;
     this.pages = this.memMb * 256;
     // SD card: the boot storage as it is now, damage included
     this.sd = { kernel: images.kernel.slice(), fs: images.fs.slice(), diffs: new Map() };
-    this.sdFiles = images.files;
+    // The card has two partitions. The boot partition holds the kernel and root filesystem image (the
+    // launch image; the golden image restores it). The data partition holds what the ground uplinks: the
+    // satellite mounts it at /sd (the emulator's virtio 9p device) and runs programs from it, and it is
+    // kept across reboots and golden-image boots alike.
+    this.sdData = new Map();   // file name -> bytes, in the order they were written
+    this.dataOff = Math.ceil((images.kernel.length + images.fs.length) / 1048576) * 1048576;
+    this.layoutSd();
     // FRAM: non-volatile and immune to bit flips, so it keeps the boot record across resets
     this.fram = { boots: 0, failedStreak: 0, wdResets: 0, mcResets: 0, goldenBoots: 0, lastReset: "first power-on" };
     // the golden image: a write-protected copy of the launch image on the second SD card (the iOBC has
@@ -66,7 +72,7 @@ export class FlightComputer {
     if (this.golden.on && this.fram.failedStreak >= GOLDEN_AFTER) {
       // the boot loader reads the failure count from FRAM, boots the golden copy and writes it over the primary card
       this.bootSource = "golden"; this.fram.goldenBoots++;
-      this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear(); this.sdFiles = this.images.files;
+      this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.clearBootDiffs();
       this.log(`BOOT LOADER: ${this.fram.failedStreak} failed boots in a row (FRAM) · booting the golden image from SD card 2 and copying it over SD card 1`);
       this.emit("sd-restore"); this.emit("golden-boot");
     }
@@ -82,6 +88,7 @@ export class FlightComputer {
       uart1: true, uart2: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
       // the computer's VGA output, shown by the ground station panel (the payload draws on it)
       ...(this.screenEl ? { screen_container: this.screenEl } : {}),
+      filesystem: {},   // the SD card's data partition (virtio 9p), mounted by init at /sd
     });
     for (let n = 0; n < 4; n++) this.emu.add_listener(`serial${n}-output-byte`, (b) => this.onSerial(n, b));
     // A corrupted register can put the emulator in a state it was never meant to reach, and v86
@@ -89,6 +96,8 @@ export class FlightComputer {
     // nothing more is printed or kicked, and only a reset (the watchdog) brings it back.
     const emu = this.emu;
     emu.add_listener("emulator-ready", () => {
+      // the data partition as it was left: its files go back into the emulator's 9p filesystem
+      if (emu.fs9p) for (const [name, data] of this.sdData) emu.fs9p.CreateBinaryFile(name, 0, data.slice());
       const v = emu.v86; if (!v) return; const tick = v.do_tick.bind(v);
       v.do_tick = () => { try { tick(); } catch (e) { v.running = false; if (this.emu === emu) this.cpuLockup(e); } };
     });
@@ -96,6 +105,7 @@ export class FlightComputer {
   }
   async powerCycle(reason) {
     this.fram.lastReset = reason;
+    await this.syncSd().catch(() => {});   // what programs wrote to /sd is on the card
     const old = this.emu; this.emu = null; clearTimeout(this.bootTimer);
     this.emit("reset", { reason });
     // a locked-up emulator never reports that it stopped, so do not wait for it for long
@@ -330,29 +340,71 @@ export class FlightComputer {
     return r;
   }
 
-  // ---------------------------------------------------------------- SD card (boot storage)
-  // Damage there changes nothing until the next boot reads it.
-  sdBytes() { return this.sd.kernel.length + this.sd.fs.length; }
-  sdCapacity() { return this.images.kernel.length + this.images.fs.length + SD_SPARE; }
+  // ---------------------------------------------------------------- SD card
+  // Boot partition: damage changes nothing until the next boot reads it. Data partition: the running
+  // satellite reads its files from the card, so damage there is seen the next time a program reads it.
+  sdBootBytes() { return this.sd.kernel.length + this.sd.fs.length; }
+  sdCapacity() { return this.dataOff + SD_DATA_MB * 1048576; }
+  sdFree() { return SD_DATA_MB * 1048576 - this.dataLayout.reduce((n, f) => n + Math.ceil(f.size / 4096) * 4096, 0); }
+  // files in the data partition, each starting on a 4 KB block
+  layoutSd() {
+    let off = this.dataOff; this.dataLayout = [];
+    for (const [name, data] of this.sdData) { this.dataLayout.push({ name, off, size: data.length }); off += Math.ceil(Math.max(1, data.length) / 4096) * 4096; }
+  }
+  dataFileAt(index) { return this.dataLayout.find((f) => index >= f.off && index < f.off + f.size); }
   describeSd(index) {
     const kl = this.images.kernel.length;
-    if (index >= this.sdBytes()) return { label: "free space", cat: "free" };
+    if (index >= this.dataOff) {
+      const f = this.dataFileAt(index);
+      return f ? { label: `data partition: /sd/${f.name} +0x${(index - f.off).toString(16)}`, cat: "payload", file: f.name, data: true } : { label: "data partition: free space", cat: "free", data: true };
+    }
+    if (index >= this.sdBootBytes()) return { label: "boot partition: free space", cat: "free" };
     if (index < kl) return { label: "kernel image", cat: "kernel" };
-    const off = index - kl, f = this.sdFiles.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
+    const off = index - kl, f = this.images.files.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
     return f ? { label: `file ${f.name} +0x${(off - f.dataOff).toString(16)}`, cat: this.os.categorizeFile(f.name), file: f.name } : { label: "filesystem metadata", cat: "other" };
   }
+  sdByte(x) {
+    const kl = this.sd.kernel.length;
+    if (x < kl) return this.sd.kernel[x];
+    if (x < this.dataOff) return this.sd.fs[x - kl] ?? 0;
+    const f = this.dataFileAt(x), d = f && this.sdData.get(f.name); return (d && d[x - f.off]) ?? 0;
+  }
   readSd(index, n) {
-    const kl = this.sd.kernel.length, out = new Uint8Array(n);
-    for (let i = 0; i < n; i++) { const x = index + i; out[i] = x < kl ? this.sd.kernel[x] : this.sd.fs[x - kl] ?? 0; }
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = this.sdByte(index + i);
     return out;
   }
+  // the data partition as the running satellite has it now (after an upload, a delete, a program writing)
+  async syncSd() {
+    const fs = this.emu && this.emu.fs9p; if (!fs) return;
+    const names = (fs.read_dir("/") || []).filter((n) => !n.startsWith("."));
+    const next = new Map();
+    for (const n of names) { const d = await fs.read_file("/" + n); if (d) next.set(n, new Uint8Array(d)); }
+    const same = next.size === this.sdData.size && [...next].every(([n, d]) => { const o = this.sdData.get(n); return o && o.length === d.length; });
+    if (!same) for (const k of [...this.sd.diffs.keys()]) if (k >= this.dataOff) this.sd.diffs.delete(k);   // files moved: forget the marks
+    // keep the order files were first written in
+    const ordered = new Map([...this.sdData.keys()].filter((n) => next.has(n)).map((n) => [n, next.get(n)]));
+    for (const [n, d] of next) if (!ordered.has(n)) ordered.set(n, d);
+    this.sdData = ordered; this.layoutSd();
+    this.emit("sd-write", {});
+  }
+  clearBootDiffs() { for (const k of [...this.sd.diffs.keys()]) if (k < this.dataOff) this.sd.diffs.delete(k); }
   hitSd(index, mask, opts) { return this.hitSdMany([{ index, mask }], opts); }
   hitSdMany(cells, { quiet = false } = {}) {
     const kl = this.sd.kernel.length, hit = [];
     for (const { index, mask } of cells) {
-      const inK = index < kl, area = inK ? this.sd.kernel : this.sd.fs, abs = inK ? index : index - kl;
-      if (!mask || abs >= area.length) continue;
-      area[abs] ^= mask;
+      if (!mask) continue;
+      if (index >= this.dataOff) {
+        // a file on the data partition: change the card's copy, and the one the running satellite reads
+        const f = this.dataFileAt(index); if (!f) continue;
+        this.sdData.get(f.name)[index - f.off] ^= mask;
+        const fs = this.emu && this.emu.fs9p, id = fs ? fs.SearchPath("/" + f.name).id : -1;
+        if (id >= 0 && fs.inodedata[id] && index - f.off < fs.inodedata[id].length) fs.inodedata[id][index - f.off] ^= mask;
+      } else {
+        const inK = index < kl, area = inK ? this.sd.kernel : this.sd.fs, abs = inK ? index : index - kl;
+        if (abs >= area.length) continue;
+        area[abs] ^= mask;
+      }
       const x = (this.sd.diffs.get(index) || 0) ^ mask;
       if (x) this.sd.diffs.set(index, x); else this.sd.diffs.delete(index);
       hit.push({ index, mask, what: this.describeSd(index) });
@@ -361,29 +413,17 @@ export class FlightComputer {
     // report the most important thing damaged
     const ORDER = ["kernel", "fsw", "app", "payload", "lib", "other"], main = hit.reduce((a, b) => (ORDER.indexOf(b.what.cat) < ORDER.indexOf(a.what.cat) ? b : a));
     const bits = hit.reduce((n, h) => n + popcount(h.mask), 0);
-    if (!quiet) this.log(`SD card hit byte ${main.index}${bits > 1 ? ` (${bits} bits)` : ` mask 0x${hex2(main.mask)}`} · ${main.what.label} · nothing happens until the next boot reads it`);
+    if (!quiet) this.log(`SD card hit byte ${main.index}${bits > 1 ? ` (${bits} bits)` : ` mask 0x${hex2(main.mask)}`} · ${main.what.label} · ${main.what.data ? "seen the next time a program reads it" : "nothing happens until the next boot reads it"}`);
     const r = { index: main.index, mask: main.mask, what: main.what, bits };
     this.emit("sd-hit", r);
     return r;
   }
   setGolden(on) { this.golden.on = on; this.log(`Golden image fallback ${on ? "on" : "off"}${on ? ` (after ${GOLDEN_AFTER} failed boots in a row)` : ": a damaged card boot-loops until the ground restores it"}`); }
-  // A file the flight software received and verified is written to the SD card, so it is still
-  // there after a reboot. In the model the boot storage is the initramfs image, so the file is
-  // appended to it as one more cpio archive (the kernel unpacks archives one after another).
-  sdFree() { return this.images.fs.length + SD_SPARE - this.sd.fs.length; }
-  writeSdFile(path, bytes) {
-    const arc = cpioArchive([{ name: path.split("/").slice(0, -1).join("/"), dir: true }, { name: path, data: bytes }]);
-    if (arc.length > this.sdFree()) return false;
-    const fs = new Uint8Array(this.sd.fs.length + arc.length); fs.set(this.sd.fs); fs.set(arc, this.sd.fs.length);
-    this.sd.fs = fs; this.sdFiles = parseCpio(fs);
-    this.emit("sd-write", { path, size: bytes.length });
-    return true;
-  }
   restoreSd() {
-    this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear(); this.sdFiles = this.images.files;
-    this.log("SD card restored from the launch image (ground re-upload)"); this.emit("sd-restore");
+    this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.clearBootDiffs();
+    this.log("SD card boot partition restored from the launch image (ground re-upload); the data partition is untouched"); this.emit("sd-restore");
   }
-  sdDamagedBits() { let n = 0; for (const v of this.sd.diffs.values()) n += popcount(v); return n; }
+  sdDamagedBits({ boot = false } = {}) { let n = 0; for (const [k, v] of this.sd.diffs) if (!boot || k < this.dataOff) n += popcount(v); return n; }
 
   // ---------------------------------------------------------------- once a second
   tick() {

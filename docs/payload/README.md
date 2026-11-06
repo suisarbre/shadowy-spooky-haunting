@@ -4,4 +4,6 @@
 
 doomgeneric, and so these two binaries, are licensed under the GNU General Public License v2: see `LICENSE-doomgeneric.txt`. The complete source is the doomgeneric commit above together with `build/doom/` in this repository.
 
-No game data is included. The page asks for a Doom IWAD file (the shareware `doom1.wad` works).
+`freedoom1.wad.gz` is [Freedoom](https://freedoom.github.io/) Phase 1, version 0.13.0, gzip-compressed, unmodified: BSD licence, see `LICENSE-freedoom.txt`.
+
+`sysreport.sh` is an example payload script.

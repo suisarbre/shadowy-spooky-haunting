@@ -178,25 +178,28 @@ Every power-on boots from the SD card as it is at that moment. The filesystem im
 
 **Golden image.** The iOBC has two SD card slots. The second holds a write-protected copy of the launch image. The boot loader reads the failed-boot count from FRAM, and after 3 failures in a row it boots the golden copy and copies it over the primary card. The golden card itself is not exposed to hits in the model: a real one would be write-protected and checked with a CRC before use. Toggle it under Protection.
 
-## Ground station: uplinking software, and Doom in lockstep
+## Ground station: uplink anything, run it on the satellite
 
-**Uplink.** The ground sends a file over the same radio link as commands, through `serbridge` on the satellite:
+**Two partitions on the SD card.** The boot partition holds the kernel and root filesystem image: the launch image, which the golden image restores. The data partition holds what the ground uplinks. The satellite mounts it at `/sd` (the emulator's virtio 9p device, kernel `CONFIG_9P_FS`) and runs programs straight from it, so a large file does not have to fit in RAM. The data partition survives reboots and golden-image boots alike, as user data is kept apart from the system on a real satellite. The board shows both: the boot partition, then 40 MB of data partition.
+
+**Uplink.** Any file goes up over the same radio link as commands, through `serbridge` on the satellite:
 1. The file is gzip-compressed (as uplinks are, to save link time) and split into 2 KB chunks, each base64 with its own CRC-32.
 2. The satellite acknowledges each chunk in order. A chunk that fails its CRC or arrives out of order is refused, and the ground resends from there (go-back-N, 8 chunks in flight).
-3. At the end the satellite checks the whole file's size and CRC-32, then keeps it under `/payload`.
-4. The model writes the verified file to the SD card: in this model the boot storage is the initramfs image, so the file is appended to it as one more cpio archive, which the kernel unpacks after the first. It is still there after a reboot. The golden image is the launch image, so a fallback to it removes what was uplinked since, as on a real satellite.
+3. At the end the satellite checks the whole file's size and CRC-32, unpacks it (gzip checks its own CRC too) onto `/sd`, and makes it executable if it is an ELF program or a `#!` script.
 
-The page's link is fast; the panel also shows how long a 9.6 kbps CubeSat UHF uplink would take (Doom and its shareware data, 2.3 MB compressed, would need about 40 minutes).
+Files can be deleted too. The page's link is fast; the panel also shows how long a 9.6 kbps CubeSat UHF uplink would take (Doom and Freedoom, 10.4 MB compressed, would need about 3 hours).
 
-**Doom as a payload.** Doom (doomgeneric, GPLv2) is built twice from one source, by `build/doom/build-doom.sh`: a static i386 Linux binary for the satellite and WebAssembly for the ground station. Two copies of Doom given the same game data and the same keys on the same tic compute the same game: its logic is integer and fixed-point, and its random numbers come from a fixed table. What breaks that is the wall clock, so `dg_lockstep.c` takes it away. Each copy runs exactly one tic per input frame (Doom's `-singletics` mode), and the clock Doom sees is virtual: 1/35 s per tic plus exactly the time it asks to sleep (the screen-melt transition waits on it).
-- The ground records the player's keys per tic, runs its own tic, and uplinks the tic's keys: `G<tic>:<events>`.
-- The satellite runs the same tic, draws it on its VGA in mode 13h (Doom's native 320×200, 256 colours), and downlinks a hash of the frame: `@@D<tic>:<hash>`.
-- The ground compares every hash with its own. The panel shows both screens and the first tic whose frames differ.
-- The ground stays at most one second ahead of the satellite, so slow emulation does not pull them apart.
+**Running.** The ground sends a command line; the satellite runs it in `/sd` with `/sd` on the `PATH`, in its own process group (so Stop stops what it started too). Everything it prints comes down line by line, and lines typed on the ground go to its standard input. Programs are static i386 Linux binaries (`gcc -m32 -static`) or shell scripts (busybox). Two come with the page: a system report script, and Doom.
 
-Radiation on Doom's memory on the satellite changes what it computes. The frame hash catches differences too small to see, and the flight software is not affected, because the payload is a separate process. Its memory is coloured as "uplinked payload" on the board. A hit on the compressed copy on the SD card is caught by gzip's own CRC when the payload is next unpacked.
+**Lockstep, and Doom.** A program that prints `@@R<hash>` when it starts speaks the lockstep protocol. The ground then sends it one line per tic, `G<tic>:<key events>`, and it answers each with `@@D<tic>:<frame hash>`. When the ground has its own copy of that program and of the files named on its command line, it runs the same tics itself and checks every hash.
 
-Doom's game data is not in this repository: pick the shareware `doom1.wad` (or your own IWAD) in the panel.
+Doom (doomgeneric, GPLv2) is built twice from one source by `build/doom/build-doom.sh`: a static i386 Linux binary for the satellite, drawing on its VGA in mode 13h (Doom's native 320×200, 256 colours), and WebAssembly for the ground. Two copies of Doom given the same game data and the same keys on the same tic compute the same game: its logic is integer and fixed-point, and its random numbers come from a fixed table. What breaks that is the wall clock, so `dg_lockstep.c` takes it away. Each copy runs exactly one tic per input line (Doom's `-singletics` mode), and the clock Doom sees is virtual: 1/35 s per tic plus exactly the time it asks to sleep (the screen-melt transition waits on it). The ground stays at most one second ahead of the satellite.
+
+The game data is [Freedoom](https://freedoom.github.io/) Phase 1 (BSD licence), bundled with the page. Any IWAD you upload works the same way.
+
+What the checks show:
+- Radiation on Doom's memory on the satellite changes what it computes. The frame hash catches differences too small to see. The flight software is not affected: the payload is a separate process, coloured "uplinked payload" on the board.
+- Damage to the game data on the SD card is seen the next time Doom reads it. A running game has its level in RAM already; the next run that loads the damaged level differs from the ground's at once.
 
 ## OS adapters
 
@@ -213,9 +216,9 @@ The emulated hardware (`docs/js/hardware.js`) knows nothing about Linux or cFS. 
 | `docs/js/board3d.js` | 3D board, semantic zoom, picking, strikes along the line of sight |
 | `docs/js/radiation.js` | particle track model, random directions and spectrum, background radiation and its statistics |
 | `docs/js/os/linux-cfs.js` | OS adapter for Linux + cFS |
-| `docs/js/ground.js`, `gs-ui.js` | ground station: file uplink, Doom lockstep and frame check, its panel |
+| `docs/js/ground.js`, `gs-ui.js` | ground station: file uplink and delete, running programs, the lockstep check, its panel |
 | `docs/js/doom-ground.js` | the ground's copy of Doom (WebAssembly) and the few WASI calls it needs |
-| `docs/payload/` | Doom built for the satellite (`doom-i386`) and the ground (`doom-ground.wasm`), GPLv2 |
+| `docs/payload/` | ready-made payloads: Doom for the satellite (`doom-i386`) and the ground (`doom-ground.wasm`), GPLv2; Freedoom Phase 1 (`freedoom1.wad.gz`, BSD); `sysreport.sh` |
 | `docs/bzImage`, `initrd.gz` | Linux 6.8 (i386) and the root filesystem: busybox, 32-bit glibc, cFS with 13 apps + 2 libs |
 | `docs/libv86.js`, `v86.wasm`, `bios.bin`, `vgabios.bin` | v86 0.5.470 and SeaBIOS |
 | `docs/vendor/` | three.js r160 (MIT) |
@@ -250,7 +253,7 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 | `test/test-watchdog.mjs` | Node + v86 | 9/9 |
 | `test/test-tmr.mjs` | Node + v86 | 12/12 |
 | `test/test-phys.mjs` | Node + v86 | 8/8: physical memory map, hits from outside |
-| `test/browser-lab.mjs` | Chrome | 46/46 with `DOOM_WAD` set, 40/40 without (below) |
+| `test/browser-lab.mjs` | Chrome | 51/51 (below) |
 | `test/test-ecc.mjs` | Node | 66/66: every 1-, 2- and 3-bit error |
 
 `browser-lab.mjs` checks the following:
@@ -259,14 +262,14 @@ Key result: 40 random hits in SAMPLE_APP's code crash **the whole flight softwar
 - Zooming to a TMR copy reaches readable bits, and a real click flips exactly the bit under the pointer.
 - The vote repairs a flipped copy; with TMR off the answer goes wrong.
 - Every ECC outcome: corrected, detected in free memory, silent 3-bit, scrub, ECC off revealing hidden errors, and a 2-bit machine check resetting the computer.
-- CPU: a single-bit hit flips exactly that register bit (bit 31 too); a heavy ion along a row flips a run of bits in one register; a light ion straight down flips one; background particles on the die arrive at the rate the per-bit calibration sets; flipping CR0.PG locks the CPU up and the watchdog recovers it.
+- CPU: a single-bit hit flips exactly that register bit (bit 31 too); a heavy ion along a row flips a run of bits in one register; a light ion straight down flips one; background particles on the die arrive at the rate the per-bit calibration sets; flipping CR0.PG stops the CPU doing useful work and the watchdog recovers it.
 - The watchdog recovers a killed flight software.
 - The particle shower lands its bits.
-- An SD hit leads to a boot loop, and restoring the card recovers it. Left alone, the boot loader falls back to the golden image after 3 failed boots and the flight software comes back; files uplinked since are gone.
-- Uplink: a chunk damaged on the way fails its CRC and is resent, and the file is verified and stored.
-- Doom (with `DOOM_WAD=path/to/doom1.wad`): both files go up; the satellite starts from the same first frame as the ground; 150 frames match; 200 bit flips in Doom's working memory on the satellite make the frames differ while the flight software stays up; the uploaded files survive a reboot.
+- An SD hit leads to a boot loop, and restoring the card recovers it. Left alone, the boot loader falls back to the golden image after 3 failed boots and the flight software comes back; the data partition is kept.
+- Ground station: the data partition is mounted; a chunk damaged on the way fails its CRC and is resent, and the file arrives intact; files can be deleted; an uplinked script runs, its output comes down, a line sent up reaches its input.
+- Doom with Freedoom: both go up (27.5 MB); the ground starts its own copy from the same first frame; 150 frames match; 200 bit flips in Doom's working memory on the satellite make the frames differ while the flight software stays up; monster positions changed in a level's THINGS on the SD card make the next run's frames differ; the data partition survives a reboot.
 
-Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome DOOM_WAD=/path/to/doom1.wad node test/browser-lab.mjs` (without `DOOM_WAD` the Doom checks are skipped).
+Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome node test/browser-lab.mjs`.
 
 ## Gotchas found while porting
 
@@ -278,6 +281,8 @@ Run it with Playwright, serving `docs/` on port 8773: `CHROME=/path/to/chrome DO
 - **v86's `read_memory` returns a live view** of guest RAM: copy it before comparing later.
 - **three.js (WebGL2) cannot resize a texture's storage**: a canvas texture that changes size needs a new texture.
 - **The payload draws on the VGA directly**: the kernel needs `CONFIG_DEVMEM` (to map 0xA0000) and `CONFIG_X86_IOPL_IOPERM` (for the VGA registers).
+- **The data partition is v86's 9p filesystem**: the kernel needs `CONFIG_VIRTIO_PCI`, `CONFIG_NET_9P_VIRTIO` and `CONFIG_9P_FS`; `init` mounts tag `host9p` with `cache=none`, so a flipped bit on the card is what the next read returns.
+- **A lockstep pair must start counting tics together**: the ground's copy takes a moment to load, and tics sent before it is ready shift the two apart. No tic goes up until it is.
 
 ## Rebuilding
 

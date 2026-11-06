@@ -1,11 +1,5 @@
 #!/bin/sh
-# Start the payload application the ground uplinked (run by serbridge on "GS<wad>").
-# The uplinked files sit gzip-compressed in /payload (the SD card copy); unpack them into RAM and run.
-# $1: the name of the game data file, as uplinked
-mkdir -p /tmp/payload
-for f in doom "$1"; do
-  [ -f "/payload/$f.gz" ] || { echo "@@E missing /payload/$f.gz"; exit 2; }
-  gunzip -c "/payload/$f.gz" > "/tmp/payload/$f" || { echo "@@E cannot unpack $f (damaged?)"; exit 3; }
-done
-chmod +x /tmp/payload/doom
-cd /tmp/payload && exec ./doom -iwad "/tmp/payload/$1"
+# Run a payload command the ground sent (serbridge, on "GS<command line>"): from the SD card's
+# data partition, with it on the PATH. $1: the whole command line.
+[ -d /sd ] && mountpoint -q /sd || { echo "the SD card's data partition is not mounted"; exit 2; }
+cd /sd && export PATH=/sd:$PATH && exec sh -c "exec $1"

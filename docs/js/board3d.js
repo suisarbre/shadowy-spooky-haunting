@@ -119,7 +119,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
 
   // ---- the board ----
   const ram = new Surface("ram", 256, fc.pages, 5);
-  const sd = new Surface("sd", 64, Math.ceil(fc.sdCapacity() / PAGE), 2.4);   // the card's whole capacity, free space included
+  const sd = new Surface("sd", 160, Math.ceil(fc.sdCapacity() / PAGE), 3);   // boot partition, then the data partition (free space included)
   // closest view: about 24 rows of bits on screen
   controls.minDistance = ram.bitW * 24 / (2 * Math.tan(20 * Math.PI / 180));
 
@@ -351,7 +351,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   }
 
   // read one page of a surface (a live view for RAM)
-  const readPage = (s, page) => page >= s.pages ? null : s.kind === "ram" ? fc.viewRam(page * PAGE, PAGE) : (page * PAGE >= fc.sdBytes() ? new Uint8Array(PAGE) : fc.readSd(page * PAGE, Math.min(PAGE, fc.sdBytes() - page * PAGE)));
+  const readPage = (s, page) => page >= s.pages ? null : s.kind === "ram" ? fc.viewRam(page * PAGE, PAGE) : fc.readSd(page * PAGE, PAGE);
   const latent = (s, addr) => s.kind === "ram" && fc.ecc.on ? fc.latentMask(addr) : 0;
   const damagedMask = (s, addr) => s.kind === "sd" ? fc.sd.diffs.get(addr) || 0 : 0;
 
@@ -468,7 +468,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
       if (p.page >= p.s.pages) return `${ram_ ? "RAM" : "SD card"}: unused`;
       const v = ram_ ? fc.readRam(p.addr, 1) : fc.readSd(p.addr, 1);
       const hidden = (latent(p.s, p.addr) >> p.bit) & 1;
-      const val = v ? ` · byte 0x${hex2(v[0])}, bit ${p.bit} = ${hidden ? `${((v[0] >> p.bit) & 1) ^ 1} in the cell, ECC reads it as ${(v[0] >> p.bit) & 1}` : (v[0] >> p.bit) & 1}` : "";
+      const val = v && v.length ? ` · byte 0x${hex2(v[0])}, bit ${p.bit} = ${hidden ? `${((v[0] >> p.bit) & 1) ^ 1} in the cell, ECC reads it as ${(v[0] >> p.bit) & 1}` : (v[0] >> p.bit) & 1}` : "";
       return `${ram_ ? "RAM" : "SD card"} ${hexAddr(p.addr)}${val} · ${w.label}${ram_ && w.va != null ? ` · va 0x${w.va.toString(16)}` : ""}`;
     }
     if (p.die) {

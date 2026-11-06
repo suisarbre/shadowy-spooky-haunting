@@ -28,23 +28,6 @@ export function parseCpio(u8) {
   return out.sort((a, b) => a.dataOff - b.dataOff);
 }
 
-// A cpio "newc" archive: [{ name, dir: true } | { name, data: Uint8Array }], with its trailer.
-export function cpioArchive(entries) {
-  const parts = [], te = new TextEncoder(), hx = (n) => (n >>> 0).toString(16).padStart(8, "0");
-  let ino = 0x7000, len = 0;
-  const pad = () => { const p = (4 - (len % 4)) % 4; if (p) { parts.push(new Uint8Array(p)); len += p; } };
-  const add = (name, mode, data) => {
-    const nm = te.encode(name + "\0"), size = data ? data.length : 0;
-    const h = te.encode("070701" + [ino++, mode, 0, 0, 1, 0, size, 0, 0, 0, 0, nm.length, 0].map(hx).join(""));
-    parts.push(h, nm); len += h.length + nm.length; pad();
-    if (data) { parts.push(data); len += data.length; pad(); }
-  };
-  for (const e of entries) add(e.name, e.dir ? 0o40755 : 0o100644, e.dir ? null : e.data);
-  add("TRAILER!!!", 0, null);
-  const out = new Uint8Array(len); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
-  return out;
-}
-
 // Firmware plus the launch image of the boot storage: what is written on the
 // SD card before launch, and what the ground can re-upload.
 export async function loadImages(os) {

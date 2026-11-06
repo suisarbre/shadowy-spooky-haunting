@@ -4,15 +4,18 @@
  *   VM -> host : "T<hex>\n"  telemetry packet received from TO_LAB on UDP 2234
  * Hex framing keeps the serial stream line-based and printable.
  *
- * File uplink (software updates from the ground), stored under /payload:
- *   host -> VM : "UB<name> <size> <crc32>"   begin a file (size and CRC-32 of the whole file, hex)
+ * File uplink (software from the ground), stored on the SD card's data partition, mounted at /sd.
+ * Files travel gzip-compressed; the satellite unpacks them once verified.
+ *   host -> VM : "UB<name> <size> <crc32>"   begin a file (size and CRC-32 of the compressed file, hex)
  *                "UD<seq>:<crc32>:<base64>"   one chunk, in order; its own CRC-32
- *                "UE"                          end: check size and CRC, then keep the file
+ *                "UE"                          end: check size and CRC, unpack, keep the file
+ *                "UX<name>"                    delete a file
  *   VM -> host : "UK<next seq>" chunk accepted · "UN<seq>" rejected, resend from seq ·
- *                "UA<name> ok|bad <crc32>"   file verified and stored, or discarded
- * Payload application (Doom), started and fed by the ground:
- *   host -> VM : "GS<args>" start /bin/payload-start <args> · "GQ" stop · "G<tic>:<keys>" one tic of input
- *   VM -> host : "P<line>" a line the payload printed · "PX<status>" the payload exited
+ *                "UA<name> ok|bad|deleted <crc32>"
+ * Payload: any program or script on /sd, started and fed by the ground:
+ *   host -> VM : "GS<command line>" start it (in /sd, with /sd on the PATH) · "GQ" stop it ·
+ *                "GI<text>" one line to its standard input
+ *   VM -> host : "P<line>" a line it printed (stdout and stderr) · "PX<status>" it exited
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,8 +62,7 @@ static void uplink_line(char *l, size_t n) {
         if (up_f) fclose(up_f);
         char name[200]; unsigned sz = 0, crc = 0;
         if (sscanf(l + 2, "%199s %x %x", name, &sz, &crc) != 3 || strchr(name, '/')) { say("UAx bad 0"); return; }
-        mkdir("/payload", 0755);
-        snprintf(up_name, sizeof up_name, "%s", name); snprintf(up_tmp, sizeof up_tmp, "/payload/.%s.part", name);
+        snprintf(up_name, sizeof up_name, "%s", name); snprintf(up_tmp, sizeof up_tmp, "/sd/.%s.part.gz", name);
         up_f = fopen(up_tmp, "wb"); up_size = sz; up_crc = crc; up_have_crc = 0; up_seq = 0; up_got = 0;
         say(up_f ? "UK0" : "UA%s bad 0", up_name);
     } else if (l[1] == 'D' && up_f) {
@@ -74,20 +76,31 @@ static void uplink_line(char *l, size_t n) {
         say("UK%x", up_seq);
     } else if (l[1] == 'E' && up_f) {
         fclose(up_f); up_f = NULL;
-        char final[260]; snprintf(final, sizeof final, "/payload/%s", up_name);
+        char final[260], cmd[700]; snprintf(final, sizeof final, "/sd/%s", up_name);
         int ok = up_got == up_size && up_have_crc == up_crc;
-        if (ok) rename(up_tmp, final); else unlink(up_tmp);
+        if (ok) {   /* gunzip checks its own CRC too; then mark programs and scripts executable */
+            snprintf(cmd, sizeof cmd, "gunzip -c '%s' > '%s.new' && mv '%s.new' '%s'", up_tmp, final, final, final);
+            ok = system(cmd) == 0;
+            unsigned char m[4] = { 0 }; FILE *f = fopen(final, "rb"); if (f) { (void)!fread(m, 1, 4, f); fclose(f); }
+            if (ok && ((m[0] == 0x7f && m[1] == 'E' && m[2] == 'L' && m[3] == 'F') || (m[0] == '#' && m[1] == '!'))) chmod(final, 0755);
+        }
+        unlink(up_tmp);
         say("UA%s %s %08x", up_name, ok ? "ok" : "bad", up_have_crc);
+    } else if (l[1] == 'X') {
+        char final[260]; if (strchr(l + 2, '/')) return;
+        snprintf(final, sizeof final, "/sd/%s", l + 2);
+        say("UA%s %s 0", l + 2, unlink(final) == 0 ? "deleted" : "bad");
     }
 }
 
 /* ---- payload application ---- */
 static pid_t pl_pid = -1; static int pl_in = -1, pl_out = -1;
 static void payload_start(const char *args) {
-    if (pl_pid > 0) { kill(pl_pid, SIGKILL); }
+    if (pl_pid > 0) { kill(-pl_pid, SIGKILL); waitpid(pl_pid, NULL, 0); close(pl_in); close(pl_out); pl_in = pl_out = -1; pl_pid = -1; say("PX137"); }
     int in[2], out[2]; if (pipe(in) || pipe(out)) return;
     pid_t pid = fork();
     if (pid == 0) {
+        setpgid(0, 0);   /* its own process group, so stopping it stops whatever it started */
         dup2(in[0], 0); dup2(out[1], 1); dup2(out[1], 2);
         close(in[1]); close(out[0]);
         execl("/bin/sh", "sh", "/bin/payload-start", args, (char *)NULL); _exit(127);
@@ -148,8 +161,8 @@ int main(int argc, char **argv) {
                     line[ll] = 0;
                     if (ll > 1 && line[0] == 'U') uplink_line(line, ll);
                     else if (ll > 1 && line[0] == 'G' && line[1] == 'S') payload_start(line + 2);
-                    else if (ll > 1 && line[0] == 'G' && line[1] == 'Q') { if (pl_pid > 0) kill(pl_pid, SIGKILL); }
-                    else if (ll > 1 && line[0] == 'G' && pl_in >= 0) { line[ll] = '\n'; (void)!write(pl_in, line, ll + 1); }
+                    else if (ll > 1 && line[0] == 'G' && line[1] == 'Q') { if (pl_pid > 0) kill(-pl_pid, SIGKILL); }
+                    else if (ll > 1 && line[0] == 'G' && line[1] == 'I' && pl_in >= 0) { line[ll] = '\n'; (void)!write(pl_in, line + 2, ll - 1); }
                     else if (ll > 1 && line[0] == 'C') {
                         size_t m = 0;
                         for (size_t j = 1; j + 1 < ll && m < sizeof pkt; j += 2) {

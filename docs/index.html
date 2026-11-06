@@ -55,6 +55,14 @@
   .gs-col { display:flex; flex-direction:column; gap:8px; min-width:0; }
   .gs-files { font:11px/1.6 var(--mono); color:var(--dim); }
   .gs-files b { color:var(--fg); font-weight:500; }
+  .gs-sat:focus { outline:2px solid var(--acc); outline-offset:2px; }
+  .gs-files { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; max-height:150px; overflow:auto; }
+  .gs-files li { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+  .gs-files li button { padding:0 7px; font-size:11px; line-height:18px; }
+  .gs-input { flex:1; min-width:0; font:12px/1.4 var(--mono); color:var(--fg); background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
+  .gs-input:focus { border-color:var(--acc); outline:none; }
+  .gs-cmd { flex-wrap:nowrap; }
+  .gs-out { margin:0; height:120px; overflow:auto; font:11px/1.45 var(--mono); color:#c9d1d9; background:rgba(0,0,0,.35); border:1px solid var(--line); border-radius:8px; padding:6px 8px; white-space:pre-wrap; word-break:break-word; }
   .gs-file { display:block; border:1px dashed var(--line); border-radius:8px; padding:7px 10px; cursor:pointer; font-size:13px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .gs-file:hover { border-color:var(--acc); }
   .gs-file input { position:absolute; opacity:0; width:1px; height:1px; }
@@ -70,6 +78,9 @@
   .gs-sat { position:relative; overflow:hidden; }
   .gs-sat canvas { position:absolute; inset:0; width:100% !important; height:100% !important; image-rendering:pixelated; }
   .gs-sat .gs-text { position:absolute; inset:0; padding:4px; white-space:pre; font:6px/6px monospace; color:#9aa4b2; overflow:hidden; }
+  .gs-gwrap { position:relative; }
+  .gs-gnote { position:absolute; inset:1px; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; font-size:12px; color:var(--dim); background:rgba(3,4,10,.85); border-radius:6px; }
+  .gs-gnote[hidden] { display:none; }
   #gs-satfig.diverged .gs-sat { border-color:var(--bad); box-shadow:0 0 0 1px var(--bad); }
   .gs-sync { font:11px/1.4 var(--mono); }
   @media (max-width: 760px) { .gs-grid { grid-template-columns:minmax(0, 1fr); } .gs { bottom:calc(84px + env(safe-area-inset-bottom, 0px)); } }
@@ -182,22 +193,26 @@
   <div class="gs-head"><span class="lbl">Ground station</span><button id="gs-close" aria-label="Close the ground station">Close</button></div>
   <div class="gs-grid">
     <div class="gs-col">
-      <div class="lbl">Uplink · software to the satellite</div>
-      <div id="gs-files" class="gs-files"></div>
-      <label class="gs-file"><input type="file" id="gs-wad" accept=".wad,.WAD"><span id="gs-wad-name">Choose Doom game data (.wad)…</span></label>
-      <button id="gs-up">Upload Doom to the satellite</button>
+      <div class="lbl">SD card · data partition, mounted at /sd</div>
+      <ul id="gs-files" class="gs-files"></ul>
+      <label class="gs-file"><input type="file" id="gs-pick" multiple><span>Upload files…</span></label>
       <div class="gs-bar" aria-hidden="true"><i id="gs-bar"></i></div>
       <div id="gs-up-text" class="gs-note" aria-live="polite"></div>
-      <p class="gs-note">Files go up gzip-compressed in 2 KB chunks with a CRC-32 each; the satellite acknowledges every chunk and a bad one is sent again. A verified file is stored on the SD card, so it survives a reboot. The golden image is the launch image: falling back to it removes what was uplinked since.</p>
-      <p class="gs-note">Use the shareware <b>doom1.wad</b> or your own copy; it never leaves your browser except to go up to the emulated satellite.</p>
+      <div class="lbl">Ready-made payloads</div>
+      <div class="row"><button id="gs-pre-doom" title="Doom (doomgeneric, GPLv2) with Freedoom's game data (BSD licence), 30 MB">Doom · Freedoom</button><button id="gs-pre-sys" title="A shell script that reports on the flight computer and answers what you type">System report script</button></div>
+      <p class="gs-note">Any file goes: gzip-compressed, in 2 KB chunks with a CRC-32 each, acknowledged one by one and resent when bad. Once the whole file checks out the satellite unpacks it onto its data partition. Programs (static i386 Linux binaries) and <b>#!</b> scripts are made executable. The data partition survives reboots and golden-image boots; the boot partition is separate.</p>
     </div>
     <div class="gs-col gs-play">
+      <div class="lbl">Run on the satellite (in /sd)</div>
+      <form class="row gs-cmd" id="gs-run-form"><input id="gs-cmd" class="gs-input" spellcheck="false" autocomplete="off" aria-label="Command line to run on the satellite" placeholder="e.g. doom -iwad freedoom1.wad"><button id="gs-run" type="submit">Run</button><button id="gs-stop" type="button" disabled>Stop</button></form>
       <div class="gs-screens">
-        <figure><figcaption class="lbl">Ground · reference copy</figcaption><canvas id="gs-ground" width="320" height="200" tabindex="0" aria-label="The ground station's copy of Doom. Click here, then play with the keyboard."></canvas></figure>
-        <figure id="gs-satfig"><figcaption class="lbl">Satellite · its VGA output</figcaption><div id="gs-sat" class="gs-sat"><div class="gs-text"></div><canvas></canvas></div></figure>
+        <figure id="gs-satfig"><figcaption class="lbl">Satellite · its VGA output</figcaption><div id="gs-sat" class="gs-sat" tabindex="0" aria-label="The satellite's screen. Click here, then use the keyboard for programs that take keys."><div class="gs-text"></div><canvas></canvas></div></figure>
+        <figure id="gs-groundfig"><figcaption class="lbl">Ground · its own copy</figcaption><div class="gs-gwrap"><canvas id="gs-ground" width="320" height="200" tabindex="0" aria-label="The ground station's copy of the program. Click here, then play with the keyboard."></canvas><div id="gs-gnote" class="gs-gnote">The ground runs its own copy when it has one (Doom), to check the satellite frame by frame.</div></div></figure>
       </div>
-      <div class="row"><button id="gs-start" disabled>Start Doom on both</button><button id="gs-stop" disabled>Stop</button><span id="gs-sync" class="gs-sync" aria-live="polite"></span></div>
-      <p class="gs-note">Same game data, same keys on the same tic: Doom computes the same frames, so the satellite downlinks a hash of each frame and the ground checks it against its own. A particle that changes the satellite's copy of Doom shows up as the first frame that differs. Click the ground screen, then: arrows move, Ctrl fires, Space opens doors, Shift runs, Enter and Esc for the menu.</p>
+      <div id="gs-sync" class="gs-sync" aria-live="polite"></div>
+      <pre id="gs-out" class="gs-out" aria-label="Program output, downlinked"></pre>
+      <form class="row gs-cmd" id="gs-in-form"><input id="gs-in" class="gs-input" spellcheck="false" autocomplete="off" aria-label="A line to send to the program's input" placeholder="send a line to its input" disabled><button type="submit" id="gs-send" disabled>Send</button></form>
+      <p class="gs-note">Programs that run in lockstep (Doom does) take one line of keys per tic and answer with a hash of the frame. When the ground has its own copy of the program and of its files, it runs the same tics and checks every hash: the first one that differs is where the satellite's copy was changed. Click a screen, then: arrows move, Ctrl fires, Space opens doors, Shift runs, Enter and Esc for the menu.</p>
     </div>
   </div>
 </section>
@@ -242,7 +257,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110601";
+window.BUILD = "2026110604";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {

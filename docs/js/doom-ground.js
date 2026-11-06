@@ -6,13 +6,14 @@
 const ENOENT = 44, EBADF = 8, ENOSYS = 52;
 
 export class GroundDoom {
-  // wasmBytes: doom-ground.wasm; wad: { name, bytes: Uint8Array }
-  static async create(wasmBytes, wad, { log = () => {} } = {}) {
-    const g = new GroundDoom(); g.wad = wad; g.log = log;
+  // wasmBytes: doom-ground.wasm; args: the satellite's command line, as a list ("doom", "-iwad", ...);
+  // files: Map of file name -> Uint8Array, the ground's copies of the files Doom opens
+  static async create(wasmBytes, args, files, { log = () => {} } = {}) {
+    const g = new GroundDoom(); g.files = files; g.log = log;
     const { instance } = await WebAssembly.instantiate(wasmBytes, { wasi_snapshot_preview1: g.wasi() });
     g.x = instance.exports; g.x._initialize();
-    const name = "/" + wad.name, buf = g.x.dg_iwad_buf();
-    new Uint8Array(g.x.memory.buffer, buf, name.length + 1).set([...new TextEncoder().encode(name), 0]);
+    const a = new TextEncoder().encode(args.join("\n")), buf = g.x.dg_args_buf();
+    new Uint8Array(g.x.memory.buffer, buf, a.length + 1).set([...a, 0]);
     g.hash = g.x.dg_create() >>> 0;
     g.tic = 0;
     return g;
@@ -47,10 +48,10 @@ export class GroundDoom {
       },
       fd_fdstat_set_flags: () => 0,
       path_open: (dirfd, dirflags, pp, pl, oflags, rb, ri, fdflags, outp) => {
-        const path = str(pp, pl).replace(/^\.?\//, "");
+        const path = str(pp, pl).replace(/^\.?\//, "").split("/").pop();
         const writing = (oflags & 1) || (rb & 0x40n);   // O_CREAT, or the fd_write right
         let f;
-        if (path === this.wad.name && !writing) f = { data: this.wad.bytes, pos: 0 };
+        if (this.files.has(path) && !writing) f = { data: this.files.get(path), pos: 0 };
         else if (writing) f = { sink: true };            // config and save files: accepted, thrown away
         else return ENOENT;
         const fd = next++; fds.set(fd, f); mem().setUint32(outp, fd, true); return 0;

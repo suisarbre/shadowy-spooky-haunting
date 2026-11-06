@@ -15,11 +15,14 @@ void dg_lockstep_init(void);
 void DG_Init(void) { dg_lockstep_init(); }
 void DG_DrawFrame(void) {}
 
-static char iwad[256];
-__attribute__((export_name("dg_iwad_buf"))) char *dg_iwad_buf(void) { return iwad; }
+/* the satellite's command line, one argument per line, so both copies start with the same arguments */
+static char args[1024];
+__attribute__((export_name("dg_args_buf"))) char *dg_args_buf(void) { return args; }
 __attribute__((export_name("dg_create"))) uint32_t dg_create(void) {
-    static char *argv[] = { "doom", "-iwad", iwad, 0 };
-    doomgeneric_Create(3, argv);
+    static char *argv[64]; int argc = 0;
+    for (char *p = args; *p && argc < 63; ) { argv[argc++] = p; while (*p && *p != '\n') p++; if (*p) *p++ = 0; }
+    argv[argc] = 0;
+    doomgeneric_Create(argc, argv);
     return dg_hash();
 }
 __attribute__((export_name("dg_keyev"))) void dg_keyev(int down, int key) { dg_key(down, (unsigned char)key); }

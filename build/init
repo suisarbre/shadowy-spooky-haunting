@@ -8,6 +8,8 @@ mount -t mqueue mqueue /dev/mqueue
 mount -t tmpfs tmpfs /tmp
 mount -t tmpfs tmpfs /dev/shm
 ifconfig lo 127.0.0.1 up
+# the SD card's data partition (files the ground uplinks), on the emulator's virtio 9p device
+mkdir -p /sd && mount -t 9p host9p /sd -o trans=virtio,version=9p2000.L,cache=none 2>/dev/null && echo "SD data partition mounted at /sd"
 hostname spacey-sat1
 echo "VM-READY $(cat /proc/uptime)"
 # serial bridge: browser <-> cFS UDP (ttyS1 is the data channel, ttyS0 is the console)
