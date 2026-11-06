@@ -47,6 +47,32 @@
   .mnote { margin-top:8px; font:10px/1.4 var(--mono); color:var(--dim); letter-spacing:.04em; }
   .readout { margin:0; font:11px/1.5 var(--mono); color:var(--dim); text-align:center; word-break:break-word; min-height:1.5em; }
   .readout b { color:var(--fg); font-weight:500; letter-spacing:.12em; margin-right:6px; }
+  .gs { position:fixed; z-index:5; left:50%; transform:translateX(-50%); bottom:calc(96px + env(safe-area-inset-bottom, 0px)); width:min(1040px, calc(100% - 32px)); max-height:calc(100% - 130px); overflow:auto; background:rgba(8,10,18,.9); border:1px solid var(--line); border-radius:14px; backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); padding:12px 14px 14px; }
+  .gs[hidden] { display:none; }
+  .gs-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .gs-head button { padding:3px 10px; font-size:12px; }
+  .gs-grid { display:grid; grid-template-columns:minmax(0, 300px) minmax(0, 1fr); gap:16px; }
+  .gs-col { display:flex; flex-direction:column; gap:8px; min-width:0; }
+  .gs-files { font:11px/1.6 var(--mono); color:var(--dim); }
+  .gs-files b { color:var(--fg); font-weight:500; }
+  .gs-file { display:block; border:1px dashed var(--line); border-radius:8px; padding:7px 10px; cursor:pointer; font-size:13px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .gs-file:hover { border-color:var(--acc); }
+  .gs-file input { position:absolute; opacity:0; width:1px; height:1px; }
+  .gs-file:focus-within { outline:2px solid var(--acc); outline-offset:2px; }
+  .gs-bar { height:6px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; }
+  .gs-bar i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+  .gs-note { margin:0; font-size:12px; line-height:1.45; color:var(--dim); }
+  .gs-note b { color:var(--fg); font-weight:500; }
+  .gs-screens { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+  .gs-screens figure { margin:0; display:flex; flex-direction:column; gap:4px; min-width:0; }
+  #gs-ground, .gs-sat { width:100%; aspect-ratio:320 / 200; background:#000; border:1px solid var(--line); border-radius:6px; image-rendering:pixelated; }
+  #gs-ground:focus { outline:2px solid var(--acc); outline-offset:2px; }
+  .gs-sat { position:relative; overflow:hidden; }
+  .gs-sat canvas { position:absolute; inset:0; width:100% !important; height:100% !important; image-rendering:pixelated; }
+  .gs-sat .gs-text { position:absolute; inset:0; padding:4px; white-space:pre; font:6px/6px monospace; color:#9aa4b2; overflow:hidden; }
+  #gs-satfig.diverged .gs-sat { border-color:var(--bad); box-shadow:0 0 0 1px var(--bad); }
+  .gs-sync { font:11px/1.4 var(--mono); }
+  @media (max-width: 760px) { .gs-grid { grid-template-columns:minmax(0, 1fr); } .gs { bottom:calc(84px + env(safe-area-inset-bottom, 0px)); } }
   #log-panel { right:max(16px, env(safe-area-inset-right, 0px)); bottom:calc(96px + env(safe-area-inset-bottom, 0px)); width:340px; max-height:40vh; }
 
   .status { font:600 12px/1.4 var(--mono); letter-spacing:.06em; }
@@ -134,7 +160,7 @@
         <select id="bg-warp" aria-label="Time warp"></select>
       </div>
     </div>
-    <div class="row"><button id="power">Power cycle</button><button id="restore">Restore SD card</button></div>
+    <div class="row"><button id="power">Power cycle</button><button id="restore">Restore SD card</button><button id="gs-open" aria-expanded="false">Ground station</button></div>
   </div>
 </details>
 
@@ -145,12 +171,36 @@
     <div class="lbl">Mission statistics</div>
     <div class="facts survival" id="survival"></div>
     <div class="legend" aria-label="Memory colours">
-      <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core</span><span><i style="background:#2ea043"></i>cFS apps</span>
+      <span><i style="background:#8957e5"></i>kernel</span><span><i style="background:#1f6feb"></i>cFS core</span><span><i style="background:#2ea043"></i>cFS apps</span><span><i style="background:#39c5cf"></i>uplinked payload</span>
       <span><i style="background:#ff7b72"></i><i style="background:#ffa657"></i><i style="background:#e3b341"></i>TMR copies</span><span><i style="background:#6e7681"></i>C libraries</span><span><i style="background:#161b22;border:1px solid #30363d"></i>free</span>
       <span><i style="background:#ff3cc8"></i>hidden by ECC / damaged SD</span><span><i style="background:#e3b341"></i>just changed</span><span><i style="background:#f85149"></i>just hit</span>
     </div>
   </div>
 </details>
+
+<section class="gs" id="gs" hidden aria-label="Ground station">
+  <div class="gs-head"><span class="lbl">Ground station</span><button id="gs-close" aria-label="Close the ground station">Close</button></div>
+  <div class="gs-grid">
+    <div class="gs-col">
+      <div class="lbl">Uplink · software to the satellite</div>
+      <div id="gs-files" class="gs-files"></div>
+      <label class="gs-file"><input type="file" id="gs-wad" accept=".wad,.WAD"><span id="gs-wad-name">Choose Doom game data (.wad)…</span></label>
+      <button id="gs-up">Upload Doom to the satellite</button>
+      <div class="gs-bar" aria-hidden="true"><i id="gs-bar"></i></div>
+      <div id="gs-up-text" class="gs-note" aria-live="polite"></div>
+      <p class="gs-note">Files go up gzip-compressed in 2 KB chunks with a CRC-32 each; the satellite acknowledges every chunk and a bad one is sent again. A verified file is stored on the SD card, so it survives a reboot. The golden image is the launch image: falling back to it removes what was uplinked since.</p>
+      <p class="gs-note">Use the shareware <b>doom1.wad</b> or your own copy; it never leaves your browser except to go up to the emulated satellite.</p>
+    </div>
+    <div class="gs-col gs-play">
+      <div class="gs-screens">
+        <figure><figcaption class="lbl">Ground · reference copy</figcaption><canvas id="gs-ground" width="320" height="200" tabindex="0" aria-label="The ground station's copy of Doom. Click here, then play with the keyboard."></canvas></figure>
+        <figure id="gs-satfig"><figcaption class="lbl">Satellite · its VGA output</figcaption><div id="gs-sat" class="gs-sat"><div class="gs-text"></div><canvas></canvas></div></figure>
+      </div>
+      <div class="row"><button id="gs-start" disabled>Start Doom on both</button><button id="gs-stop" disabled>Stop</button><span id="gs-sync" class="gs-sync" aria-live="polite"></span></div>
+      <p class="gs-note">Same game data, same keys on the same tic: Doom computes the same frames, so the satellite downlinks a hash of each frame and the ground checks it against its own. A particle that changes the satellite's copy of Doom shows up as the first frame that differs. Click the ground screen, then: arrows move, Ctrl fires, Space opens doors, Shift runs, Enter and Esc for the menu.</p>
+    </div>
+  </div>
+</section>
 
 <div class="rightcol">
 <section class="mboard" id="mboard" aria-label="Mission statistics">
@@ -192,7 +242,7 @@
 <script>
 // Bump BUILD whenever anything here changes, so browsers never mix cached old
 // files with new ones (GitHub Pages lets browsers cache files for 10 minutes).
-window.BUILD = "2026110519";
+window.BUILD = "2026110601";
 // on a phone, start with the panels folded so the satellite is in view
 if (matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".panel[open]").forEach((d) => d.removeAttribute("open"));
 (() => {

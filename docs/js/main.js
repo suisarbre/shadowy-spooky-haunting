@@ -2,6 +2,7 @@
 import { $, bus, hexAddr, loadImages } from "./util.js";
 import { FlightComputer, SCRUB_MS, BOOT_WINDOW_MS } from "./hardware.js";
 import { createBoard } from "./board3d.js";
+import { createGroundUI } from "./gs-ui.js";
 import { Background, ENVIRONMENTS, WARPS, PARTICLES, formatMission, formatShort } from "./radiation.js";
 import os, { commands, calcExpected, calcOk } from "./os/linux-cfs.js";   // swap the adapter to try another OS
 
@@ -94,7 +95,7 @@ function zoomToCopy(k) {
 
 async function start() {
   const images = await loadImages(os);
-  fc = new FlightComputer(os, images);
+  fc = new FlightComputer(os, images, { screen: $("gs-sat") });
   fc.setWatchdog(desired.watchdog);
   board = createBoard({
     host: $("view3d"), fc, os, particle: () => desired.particle,
@@ -123,7 +124,8 @@ async function start() {
   $("bg-env").innerHTML = Object.entries(ENVIRONMENTS).map(([k, e]) => `<option value="${k}">${e.label}</option>`).join("");
   $("bg-warp").innerHTML = WARPS.map((w) => `<option value="${w.s}">${w.label}</option>`).join("");
   bus.on("map", () => board.onMap());
-  bus.on("sd-hit", () => board.onSd()); bus.on("sd-restore", () => board.onSd());
+  bus.on("sd-hit", () => board.onSd()); bus.on("sd-restore", () => board.onSd()); bus.on("sd-write", () => board.onSd());
+  const gs = createGroundUI({ fc });
   bus.on("reset", () => board.onMap());
   bus.on("log", logSoon);
   bus.on("state", (e) => { renderStatus(); if (e.state === "operational") setTimeout(() => fc.operational && fc.send(commands.calcTmr(desired.tmr)), 2500); });
@@ -134,7 +136,7 @@ async function start() {
   setInterval(() => { if (board.level !== lastLevel) { lastLevel = board.level; bus.emit("zoom", { fc, level: lastLevel }); } $("where").textContent = board.hover || (board.level !== "none" ? board.center() : ""); renderBoard(); }, 300);
   setInterval(() => { if (fc.operational) fc.requestMap(); }, 15000);   // memory layout drifts as software runs
   renderControls(); renderStatus(); renderLog();
-  window.sim = { fc, board, applySetup, desired, calcOk, zoomToCopy, os, commands, bg };
+  window.sim = { fc, board, applySetup, desired, calcOk, zoomToCopy, os, commands, bg, gs };
 }
 
 // ---- controls ----

@@ -15,7 +15,7 @@ import { CPU_REGS } from "./hardware.js";
 import { WORD } from "./ecc.js";
 import { track, PARTICLES, randomDirection, randomParticle, FLARE_SPECTRUM } from "./radiation.js";
 
-export const COLORS = { free: "#161b22", kernel: "#8957e5", fsw: "#1f6feb", app: "#2ea043", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
+export const COLORS = { free: "#161b22", kernel: "#8957e5", fsw: "#1f6feb", app: "#2ea043", payload: "#39c5cf", tmr1: "#ff7b72", tmr2: "#ffa657", tmr3: "#e3b341", lib: "#6e7681", other: "#3b4048", damaged: "#f85149" };
 const RGB = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16))]));
 const ON_BIT = { free: [125, 133, 144] };   // free pages: grey bits instead of near-black
 const PAGE = 4096, PX = 128, PY = 256;
@@ -119,7 +119,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
 
   // ---- the board ----
   const ram = new Surface("ram", 256, fc.pages, 5);
-  const sd = new Surface("sd", 64, Math.ceil(fc.sdBytes() / PAGE), 2.4);
+  const sd = new Surface("sd", 64, Math.ceil(fc.sdCapacity() / PAGE), 2.4);   // the card's whole capacity, free space included
   // closest view: about 24 rows of bits on screen
   controls.minDistance = ram.bitW * 24 / (2 * Math.tan(20 * Math.PI / 180));
 
@@ -351,7 +351,7 @@ export function createBoard({ host, fc, os, particle, onStrike, zoomInput, ticks
   }
 
   // read one page of a surface (a live view for RAM)
-  const readPage = (s, page) => page >= s.pages ? null : s.kind === "ram" ? fc.viewRam(page * PAGE, PAGE) : fc.readSd(page * PAGE, Math.min(PAGE, fc.sdBytes() - page * PAGE));
+  const readPage = (s, page) => page >= s.pages ? null : s.kind === "ram" ? fc.viewRam(page * PAGE, PAGE) : (page * PAGE >= fc.sdBytes() ? new Uint8Array(PAGE) : fc.readSd(page * PAGE, Math.min(PAGE, fc.sdBytes() - page * PAGE)));
   const latent = (s, addr) => s.kind === "ram" && fc.ecc.on ? fc.latentMask(addr) : 0;
   const damagedMask = (s, addr) => s.kind === "sd" ? fc.sd.diffs.get(addr) || 0 : 0;
 

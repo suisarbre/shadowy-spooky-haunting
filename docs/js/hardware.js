@@ -4,7 +4,7 @@
 //
 // Nothing here knows about Linux or cFS: the OS adapter (os/*.js) supplies the
 // boot images, the console patterns and the telemetry decoding.
-import { bus, hex2, hexAddr, popcount } from "./util.js";
+import { bus, hex2, hexAddr, popcount, parseCpio, cpioArchive } from "./util.js";
 import { WORD, decode, bitsSet } from "./ecc.js";
 
 export const BOOT_WINDOW_MS = 30000;   // after power-on the flight software must check in with the watchdog within this
@@ -12,6 +12,7 @@ export const SILENCE_MS = 6000;        // telemetry gap that makes the ground as
 export const SCRUB_MS = 20000;
 export const GOLDEN_AFTER = 3;         // failed boots in a row (counted in FRAM) before the boot loader falls back to the golden image         // the ECC scrubber reads every word of RAM once per this period
 export const RAM_MB = 64;              // iOBC SDRAM
+export const SD_SPARE = 4 * 1048576;   // room on the boot storage for files the ground uplinks
 
 // The CPU's architectural state that a particle can upset, as v86 keeps it (32-bit x86).
 // Each entry is one row of cells on the CPU die: { name, bits, get(cpu), set(cpu, v) }.
@@ -29,14 +30,15 @@ export const CPU_REGS = [
 export const CPU_BITS = CPU_REGS.reduce((n, r) => n + r.bits, 0);
 
 export class FlightComputer {
-  constructor(os, images) {
-    this.os = os; this.images = images;
+  constructor(os, images, { screen = null } = {}) {
+    this.os = os; this.images = images; this.screenEl = screen;
     // v86 always loads the root filesystem image at the 64 MB mark, so the PC gets
     // just enough extra RAM to hold it (the kernel frees that area after unpacking).
-    this.memMb = RAM_MB + Math.ceil(images.fs.length / 1048576) + 1;
+    this.memMb = RAM_MB + Math.ceil((images.fs.length + SD_SPARE) / 1048576) + 1;
     this.pages = this.memMb * 256;
     // SD card: the boot storage as it is now, damage included
     this.sd = { kernel: images.kernel.slice(), fs: images.fs.slice(), diffs: new Map() };
+    this.sdFiles = images.files;
     // FRAM: non-volatile and immune to bit flips, so it keeps the boot record across resets
     this.fram = { boots: 0, failedStreak: 0, wdResets: 0, mcResets: 0, goldenBoots: 0, lastReset: "first power-on" };
     // the golden image: a write-protected copy of the launch image on the second SD card (the iOBC has
@@ -64,7 +66,7 @@ export class FlightComputer {
     if (this.golden.on && this.fram.failedStreak >= GOLDEN_AFTER) {
       // the boot loader reads the failure count from FRAM, boots the golden copy and writes it over the primary card
       this.bootSource = "golden"; this.fram.goldenBoots++;
-      this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear();
+      this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear(); this.sdFiles = this.images.files;
       this.log(`BOOT LOADER: ${this.fram.failedStreak} failed boots in a row (FRAM) · booting the golden image from SD card 2 and copying it over SD card 1`);
       this.emit("sd-restore"); this.emit("golden-boot");
     }
@@ -78,6 +80,8 @@ export class FlightComputer {
       cmdline: this.os.cmdline,
       memory_size: this.memMb * 1024 * 1024,
       uart1: true, uart2: true, uart3: true, autostart: true, disable_keyboard: true, disable_mouse: true, disable_speaker: true,
+      // the computer's VGA output, shown by the ground station panel (the payload draws on it)
+      ...(this.screenEl ? { screen_container: this.screenEl } : {}),
     });
     for (let n = 0; n < 4; n++) this.emu.add_listener(`serial${n}-output-byte`, (b) => this.onSerial(n, b));
     // A corrupted register can put the emulator in a state it was never meant to reach, and v86
@@ -111,6 +115,8 @@ export class FlightComputer {
   setState(state, detail = "") { this.state = state; this.stateDetail = detail; this.emit("state", { state, detail }); }
 
   sh(cmd) { if (this.emu) this.emu.serial0_send(cmd + "\n"); }
+  // one line on the radio link (file uplink and payload channel; see build/serbridge.c)
+  radio(text) { if (this.emu) this.emu.serial_send_bytes(1, new TextEncoder().encode(text + "\n")); }
   send(packet) { if (this.emu) this.emu.serial_send_bytes(1, new TextEncoder().encode("C" + [...packet].map(hex2).join("") + "\n")); }
 
   onSerial(n, byte) {
@@ -153,6 +159,8 @@ export class FlightComputer {
 
   // ---------------------------------------------------------------- radio (ttyS1)
   onRadio(line) {
+    if (line[0] === "U") return this.emit("uplink-reply", { line });
+    if (line[0] === "P") return this.emit("payload", { line: line.slice(1) });
     if (line[0] !== "T") return;
     const hex = line.slice(1), b = new Uint8Array(hex.length >> 1);
     for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(i * 2, 2), 16);
@@ -325,10 +333,12 @@ export class FlightComputer {
   // ---------------------------------------------------------------- SD card (boot storage)
   // Damage there changes nothing until the next boot reads it.
   sdBytes() { return this.sd.kernel.length + this.sd.fs.length; }
+  sdCapacity() { return this.images.kernel.length + this.images.fs.length + SD_SPARE; }
   describeSd(index) {
     const kl = this.images.kernel.length;
+    if (index >= this.sdBytes()) return { label: "free space", cat: "free" };
     if (index < kl) return { label: "kernel image", cat: "kernel" };
-    const off = index - kl, f = this.images.files.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
+    const off = index - kl, f = this.sdFiles.find((x) => off >= x.dataOff && off < x.dataOff + x.size);
     return f ? { label: `file ${f.name} +0x${(off - f.dataOff).toString(16)}`, cat: this.os.categorizeFile(f.name), file: f.name } : { label: "filesystem metadata", cat: "other" };
   }
   readSd(index, n) {
@@ -349,7 +359,7 @@ export class FlightComputer {
     }
     if (!hit.length) return null;
     // report the most important thing damaged
-    const ORDER = ["kernel", "fsw", "app", "lib", "other"], main = hit.reduce((a, b) => (ORDER.indexOf(b.what.cat) < ORDER.indexOf(a.what.cat) ? b : a));
+    const ORDER = ["kernel", "fsw", "app", "payload", "lib", "other"], main = hit.reduce((a, b) => (ORDER.indexOf(b.what.cat) < ORDER.indexOf(a.what.cat) ? b : a));
     const bits = hit.reduce((n, h) => n + popcount(h.mask), 0);
     if (!quiet) this.log(`SD card hit byte ${main.index}${bits > 1 ? ` (${bits} bits)` : ` mask 0x${hex2(main.mask)}`} · ${main.what.label} · nothing happens until the next boot reads it`);
     const r = { index: main.index, mask: main.mask, what: main.what, bits };
@@ -357,8 +367,20 @@ export class FlightComputer {
     return r;
   }
   setGolden(on) { this.golden.on = on; this.log(`Golden image fallback ${on ? "on" : "off"}${on ? ` (after ${GOLDEN_AFTER} failed boots in a row)` : ": a damaged card boot-loops until the ground restores it"}`); }
+  // A file the flight software received and verified is written to the SD card, so it is still
+  // there after a reboot. In the model the boot storage is the initramfs image, so the file is
+  // appended to it as one more cpio archive (the kernel unpacks archives one after another).
+  sdFree() { return this.images.fs.length + SD_SPARE - this.sd.fs.length; }
+  writeSdFile(path, bytes) {
+    const arc = cpioArchive([{ name: path.split("/").slice(0, -1).join("/"), dir: true }, { name: path, data: bytes }]);
+    if (arc.length > this.sdFree()) return false;
+    const fs = new Uint8Array(this.sd.fs.length + arc.length); fs.set(this.sd.fs); fs.set(arc, this.sd.fs.length);
+    this.sd.fs = fs; this.sdFiles = parseCpio(fs);
+    this.emit("sd-write", { path, size: bytes.length });
+    return true;
+  }
   restoreSd() {
-    this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear();
+    this.sd.kernel = this.images.kernel.slice(); this.sd.fs = this.images.fs.slice(); this.sd.diffs.clear(); this.sdFiles = this.images.files;
     this.log("SD card restored from the launch image (ground re-upload)"); this.emit("sd-restore");
   }
   sdDamagedBits() { let n = 0; for (const v of this.sd.diffs.values()) n += popcount(v); return n; }

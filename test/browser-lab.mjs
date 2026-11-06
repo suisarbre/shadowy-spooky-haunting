@@ -110,13 +110,18 @@ r = await ev((d) => { const h = sim.board.strikeCpu("XMM7.2", 20, "heavy", d); r
 result("CPU: a heavy ion at a low angle along a row flips a run of bits in one register", r && r.bits >= 3 && r.regs.length === 1 && r.regs[0] === "XMM7.2", JSON.stringify(r));
 r = await ev((d) => { const h = sim.board.strikeCpu("XMM7.1", 4, "light", d); return h && { none: !!h.none, bits: h.bits }; }, deg(0, true));
 result("CPU: a light ion straight down flips one bit", r && r.bits === 1, JSON.stringify(r));
-// background on the die, calibrated per register bit (2e-7 upsets per bit per day)
-await ev(() => { sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 100 }); });
+// background on the die, calibrated per register bit (2e-7 upsets per bit per day). The register hits
+// above may have crashed the flight software (cFS uses SSE registers in memcpy): start from a clean boot,
+// and keep the RAM and SD particles from landing so the flight software stays up and the clock keeps warping
+await ev(() => sim.fc.powerCycle("ground command")); await up();
+await ev(() => { window._rs = sim.board.randomStrike; sim.board.randomStrike = () => null; sim.bg.resetStats(); sim.applySetup({ bg: true, env: "stress", warp: 100 }); });
 await sleep(15000);
-await ev(() => sim.applySetup({ bg: false })); await sleep(800);   // the mission board refreshes every 300 ms
-r = await ev(() => { const s = sim.bg.s; return { cpuBits: s.cpuBits, cpu: s.cpu, days: s.missionS / 86400, perDay: sim.bg.cpuUpsetsPerDay, board: document.getElementById("m-cpu").textContent }; });
-const ratio = r.cpuBits / (r.perDay * r.days);
-result("CPU background upsets match the per-bit rate", r.cpu > 20 && ratio > 0.5 && ratio < 1.7 && r.board === String(r.cpuBits), `${r.cpuBits} bits from ${r.cpu} particles, expected ${(r.perDay * r.days).toFixed(1)} (ratio ${ratio.toFixed(2)})`);
+await ev(() => { sim.applySetup({ bg: false }); sim.board.randomStrike = window._rs; }); await sleep(800);   // the mission board refreshes every 300 ms
+// Particles are counted, not bits: one heavy ion flips a run of bits, so bit counts are far lumpier
+// than Poisson. The particle rate is what the per-bit calibration sets (upsets per day / bits per particle).
+r = await ev(() => { const s = sim.bg.s; return { cpuBits: s.cpuBits, cpu: s.cpu, days: s.missionS / 86400, ppd: sim.bg.cal.cpuParticlesPerDay * 3e6, board: document.getElementById("m-cpu").textContent }; });
+const ratio = r.cpu / (r.ppd * r.days);
+result("CPU background: particles on the die arrive at the calibrated rate", r.cpu > 30 && ratio > 0.65 && ratio < 1.4 && r.board === String(r.cpuBits), `${r.cpu} particles, expected ${(r.ppd * r.days).toFixed(1)} (ratio ${ratio.toFixed(2)}), ${r.cpuBits} bits flipped`);
 // that much radiation also damages the SD card: restore it, then reboot clean
 await ev(() => { sim.fc.restoreSd(); sim.fc.powerCycle("ground command"); });
 result("...after the accelerated test, a restored card boots clean", await up(), await ev(() => sim.fc.state));
@@ -138,6 +143,42 @@ r = await ev(() => { const run = sim.fc.map.runs.find((x) => x.label === "heap")
 result("flare burst flips many bits at once", r && r.bits >= 10, JSON.stringify(r));
 await ev(() => sim.fc.powerCycle("ground command")); await up();
 
+// ---- ground uplink: a file with a chunk damaged on the way is resent and verified ----
+r = await ev(async () => {
+  const bytes = new Uint8Array(300000); for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 2654435761 >>> 13) & 255;
+  const fc = sim.fc, send = fc.radio.bind(fc); let spoiled = false;
+  fc.radio = (t) => { if (!spoiled && t.startsWith("UD3:")) { spoiled = true; t = t.slice(0, -8) + (t.slice(-8, -7) === "A" ? "B" : "A") + t.slice(-7); } send(t); };
+  try { const u = await sim.gs.uplink("testfile", bytes); return { ok: true, resent: u.resent, onSd: sim.gs.hasPayload("testfile"), spoiled }; }
+  catch (e) { return { ok: false, err: e.message }; } finally { fc.radio = send; }
+});
+result("uplink: a chunk damaged on the way fails its CRC, is resent, and the file is verified and stored", r.ok && r.spoiled && r.resent > 0 && r.onSd, JSON.stringify(r));
+
+// ---- payload: Doom on the satellite and the ground in lockstep (needs a WAD: DOOM_WAD=path/doom1.wad) ----
+if (process.env.DOOM_WAD) {
+  await ev(() => document.getElementById("gs-open").click());
+  await p.setInputFiles("#gs-wad", process.env.DOOM_WAD);
+  await until(() => !document.getElementById("gs-up").disabled, null, 10000);
+  await ev(() => document.getElementById("gs-up").click());
+  result("uplink: Doom and its game data go up and are stored on the SD card", await until(() => sim.gs.hasPayload("doom") && sim.gs.payloadFiles().length >= 3, null, 300000), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
+  await until(() => !document.getElementById("gs-start").disabled, null, 10000);
+  await ev(() => document.getElementById("gs-start").click());
+  // no keys: Doom plays its attract demo, which is also driven per tic
+  result("Doom: the satellite starts from the same first frame as the ground", await until(() => sim.gs.doom && sim.gs.doom.satReady !== null && sim.gs.doom.satReady === sim.gs.doom.groundHash.get(-1) || false, null, 120000), await ev(() => JSON.stringify(sim.gs.doom && { sat: sim.gs.doom.satReady, ended: sim.gs.doom.ended })));
+  result("Doom: 150 frames computed on the satellite match the ground's", await until(() => sim.gs.doom.satTic >= 150 && !sim.gs.doom.diverged, null, 120000), await ev(() => JSON.stringify({ satTic: sim.gs.doom.satTic, diverged: sim.gs.doom.diverged })));
+  await ev(() => sim.fc.requestMap()); await sleep(4000);
+  r = await ev(() => {
+    // Doom's zone memory (anonymous pages): the level, its textures and the things in it
+    const runs = sim.fc.map.runs.filter((x) => x.cat === "payload" && x.label === "anon"), pages = runs.reduce((n, x) => n + x.n, 0);
+    for (let i = 0; i < 200; i++) { let k = Math.floor(Math.random() * pages), x = runs.find((q) => (k -= q.n) < 0); sim.board.strikeAt("ram", (x.pfn + x.n + k) * 4096 + Math.floor(Math.random() * 4096), i % 8); }
+    return pages;
+  });
+  result("Doom: 200 bits flipped in its working memory on the satellite: the ground sees the frames differ", r > 0 && await until(() => !!(sim.gs.doom.diverged || sim.gs.doom.ended), null, 60000), await ev(() => JSON.stringify({ diverged: sim.gs.doom.diverged, ended: sim.gs.doom.ended })));
+  result("...the flight software is not affected: the payload is a separate process", await ev(() => sim.fc.operational));
+  await ev(() => { document.getElementById("gs-stop").click(); sim.fc.powerCycle("ground command"); });
+  result("uplinked files survive a reboot (they are on the SD card)", (await up()) && await ev(() => sim.gs.hasPayload("doom") && sim.gs.payloadFiles().length >= 3), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
+  await ev(() => document.getElementById("gs-close").click());
+} else console.log("      (Doom tests skipped: set DOOM_WAD to a Doom IWAD to run them)");
+
 // ---- SD card: latent damage, boot loop, restore ----
 const exe = await ev(() => { const f = sim.fc.images.files.find((x) => x.name === "cfs/cpu1/core-cpu1"); return sim.fc.images.kernel.length + f.dataOff; });
 await ev((i) => sim.board.strikeAt("sd", i, 0), exe);
@@ -150,9 +191,10 @@ await ev(() => sim.fc.restoreSd());
 result("restore SD card: the next reset boots clean", await up(), JSON.stringify(await ev(() => sim.fc.fram)));
 // the same damage, left alone: after 3 failed boots the boot loader falls back to the golden image
 const g0 = await ev(() => sim.fc.fram.goldenBoots);
-await ev((i) => { sim.applySetup({ golden: true, watchdog: true }); sim.board.strikeAt("sd", i, 0); sim.fc.powerCycle("ground command"); }, exe);
+await ev((i) => { sim.applySetup({ golden: true, watchdog: true }); sim.fc.writeSdFile("payload/marker.gz", new Uint8Array(100)); sim.board.strikeAt("sd", i, 0); sim.fc.powerCycle("ground command"); }, exe);
 result("golden image: 3 failed boots in a row, the boot loader boots the golden copy", await until((g) => sim.fc.fram.goldenBoots > g, g0, 200000), JSON.stringify(await ev(() => sim.fc.fram)));
 result("...it repairs the card and the flight software comes back without the ground", (await up()) && (await ev(() => sim.fc.sdDamagedBits() === 0)), JSON.stringify(await ev(() => ({ state: sim.fc.state, sd: sim.fc.sdDamagedBits() }))));
+result("...the golden image is the launch image: what the ground uplinked since is gone", await ev(() => sim.gs.payloadFiles().length === 0), JSON.stringify(await ev(() => sim.gs.payloadFiles())));
 
 await ev(() => sim.board.home()); await sleep(1500);
 await p.screenshot({ path: "test-board.png" });

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Start the payload application the ground uplinked (run by serbridge on "GS<wad>").
+# The uplinked files sit gzip-compressed in /payload (the SD card copy); unpack them into RAM and run.
+# $1: the name of the game data file, as uplinked
+mkdir -p /tmp/payload
+for f in doom "$1"; do
+  [ -f "/payload/$f.gz" ] || { echo "@@E missing /payload/$f.gz"; exit 2; }
+  gunzip -c "/payload/$f.gz" > "/tmp/payload/$f" || { echo "@@E cannot unpack $f (damaged?)"; exit 3; }
+done
+chmod +x /tmp/payload/doom
+cd /tmp/payload && exec ./doom -iwad "/tmp/payload/$1"

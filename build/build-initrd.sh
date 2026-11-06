@@ -8,6 +8,7 @@ cp $W/busybox-1.36.1/busybox $R/bin/busybox
 ( cd $R/bin && for a in $(./busybox --list); do [ -e "$a" ] || ln -s busybox "$a"; done )
 cp $W/vm/serbridge $W/vm/memmap $R/bin/
 cp $W/vm/init $R/init
+cp $(dirname "$0")/payload-start $R/bin/payload-start && chmod +x $R/bin/payload-start
 # 32-bit glibc runtime needed by core-cpu1, the app .so modules and the helpers.
 # Ubuntu's i386 loader searches /lib32, so the libraries live only there; /lib keeps
 # just the loader itself, at the interpreter path compiled into every binary.

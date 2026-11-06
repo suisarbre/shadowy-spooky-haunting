@@ -86,6 +86,7 @@ export default {
   // memory map: what kind of thing a run of pages holds (drives the colours)
   categorize(comm, label) {
     if (label.startsWith("tmr:")) return "tmr" + label.split(":")[2];
+    if (comm === "doom") return LIBS.test(label) ? "lib" : "payload";   // the uplinked payload application
     if (comm !== "core-cpu1") return LIBS.test(label) ? "lib" : "other";
     if (LIBS.test(label)) return "lib";
     if (label.startsWith("core-cpu1") || /^(heap|stack|anon|bss)$/.test(label) || label.startsWith("SYSV")) return "fsw";
@@ -96,6 +97,7 @@ export default {
     if (name === "cfs/cpu1/core-cpu1") return "fsw";
     if (name.startsWith("cfs/")) return "app";
     if (/^lib/.test(name)) return "lib";
+    if (name.startsWith("payload/")) return "payload";
     return "other";
   },
   // the TMR calculator's three copies, by memory-map label

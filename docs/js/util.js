@@ -20,11 +20,29 @@ export function parseCpio(u8) {
     const mode = hexAt(off + 14), size = hexAt(off + 54), nameSize = hexAt(off + 94);
     const name = td.decode(u8.subarray(off + 110, off + 110 + nameSize - 1));
     const dataOff = (off + 110 + nameSize + 3) & ~3;
-    if (name === "TRAILER!!!") break;
-    if ((mode & 0o170000) === 0o100000 && size > 0) out.push({ name, dataOff, size });
+    if ((mode & 0o170000) === 0o100000 && size > 0 && name !== "TRAILER!!!") out.push({ name, dataOff, size });
     off = (dataOff + size + 3) & ~3;
+    // archives can follow one another (files the ground uplinked are appended as one more): skip the padding
+    if (name === "TRAILER!!!") while (off < u8.length && u8[off] === 0) off++;
   }
   return out.sort((a, b) => a.dataOff - b.dataOff);
+}
+
+// A cpio "newc" archive: [{ name, dir: true } | { name, data: Uint8Array }], with its trailer.
+export function cpioArchive(entries) {
+  const parts = [], te = new TextEncoder(), hx = (n) => (n >>> 0).toString(16).padStart(8, "0");
+  let ino = 0x7000, len = 0;
+  const pad = () => { const p = (4 - (len % 4)) % 4; if (p) { parts.push(new Uint8Array(p)); len += p; } };
+  const add = (name, mode, data) => {
+    const nm = te.encode(name + "\0"), size = data ? data.length : 0;
+    const h = te.encode("070701" + [ino++, mode, 0, 0, 1, 0, size, 0, 0, 0, 0, nm.length, 0].map(hx).join(""));
+    parts.push(h, nm); len += h.length + nm.length; pad();
+    if (data) { parts.push(data); len += data.length; pad(); }
+  };
+  for (const e of entries) add(e.name, e.dir ? 0o40755 : 0o100644, e.dir ? null : e.data);
+  add("TRAILER!!!", 0, null);
+  const out = new Uint8Array(len); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
 }
 
 // Firmware plus the launch image of the boot storage: what is written on the
